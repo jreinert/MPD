@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -19,39 +19,38 @@
 
 #include "config.h"
 #include "ReplayGainFilterPlugin.hxx"
-#include "filter/FilterPlugin.hxx"
 #include "filter/FilterInternal.hxx"
-#include "filter/FilterRegistry.hxx"
 #include "AudioFormat.hxx"
 #include "ReplayGainInfo.hxx"
 #include "ReplayGainConfig.hxx"
 #include "mixer/MixerControl.hxx"
 #include "pcm/Volume.hxx"
-#include "pcm/PcmBuffer.hxx"
 #include "util/ConstBuffer.hxx"
-#include "util/Error.hxx"
 #include "util/Domain.hxx"
 #include "Log.hxx"
 
+#include <stdexcept>
+
 #include <assert.h>
-#include <string.h>
 
 static constexpr Domain replay_gain_domain("replay_gain");
 
 class ReplayGainFilter final : public Filter {
+	const ReplayGainConfig config;
+
 	/**
 	 * If set, then this hardware mixer is used for applying
 	 * replay gain, instead of the software volume library.
 	 */
-	Mixer *mixer;
+	Mixer *const mixer;
 
 	/**
 	 * The base volume level for scale=1.0, between 1 and 100
 	 * (including).
 	 */
-	unsigned base;
+	const unsigned base;
 
-	ReplayGainMode mode;
+	ReplayGainMode mode = ReplayGainMode::OFF;
 
 	ReplayGainInfo info;
 
@@ -70,25 +69,21 @@ class ReplayGainFilter final : public Filter {
 	PcmVolume pv;
 
 public:
-	ReplayGainFilter()
-		:mixer(nullptr), mode(REPLAY_GAIN_OFF) {
+	ReplayGainFilter(const ReplayGainConfig &_config,
+			 const AudioFormat &audio_format,
+			 Mixer *_mixer, unsigned _base)
+		:Filter(audio_format),
+		 config(_config),
+		 mixer(_mixer), base(_base) {
 		info.Clear();
-	}
 
-	void SetMixer(Mixer *_mixer, unsigned _base) {
-		assert(_mixer == nullptr || (_base > 0 && _base <= 100));
-
-		mixer = _mixer;
-		base = _base;
-
-		Update();
+		pv.Open(out_audio_format.format);
 	}
 
 	void SetInfo(const ReplayGainInfo *_info) {
-		if (_info != nullptr) {
+		if (_info != nullptr)
 			info = *_info;
-			info.Complete();
-		} else
+		else
 			info.Clear();
 
 		Update();
@@ -100,8 +95,8 @@ public:
 			return;
 
 		FormatDebug(replay_gain_domain,
-			    "replay gain mode has changed %d->%d\n",
-			    mode, _mode);
+			    "replay gain mode has changed %s->%s\n",
+			    ToString(mode), ToString(_mode));
 
 		mode = _mode;
 		Update();
@@ -113,28 +108,51 @@ public:
 	void Update();
 
 	/* virtual methods from class Filter */
-	AudioFormat Open(AudioFormat &af, Error &error) override;
-	void Close() override;
-	ConstBuffer<void> FilterPCM(ConstBuffer<void> src,
-				    Error &error) override;
+	ConstBuffer<void> FilterPCM(ConstBuffer<void> src) override;
+};
+
+class PreparedReplayGainFilter final : public PreparedFilter {
+	const ReplayGainConfig config;
+
+	/**
+	 * If set, then this hardware mixer is used for applying
+	 * replay gain, instead of the software volume library.
+	 */
+	Mixer *mixer = nullptr;
+
+	/**
+	 * The base volume level for scale=1.0, between 1 and 100
+	 * (including).
+	 */
+	unsigned base;
+
+public:
+	explicit PreparedReplayGainFilter(const ReplayGainConfig _config)
+		:config(_config) {}
+
+	void SetMixer(Mixer *_mixer, unsigned _base) {
+		assert(_mixer == nullptr || (_base > 0 && _base <= 100));
+
+		mixer = _mixer;
+		base = _base;
+	}
+
+	/* virtual methods from class Filter */
+	Filter *Open(AudioFormat &af) override;
 };
 
 void
 ReplayGainFilter::Update()
 {
 	unsigned volume = PCM_VOLUME_1;
-	if (mode != REPLAY_GAIN_OFF) {
-		const auto &tuple = info.tuples[mode];
-		float scale = tuple.CalculateScale(replay_gain_preamp,
-						   replay_gain_missing_preamp,
-						   replay_gain_limit);
+	if (mode != ReplayGainMode::OFF) {
+		const auto &tuple = info.Get(mode);
+		float scale = tuple.CalculateScale(config);
 		FormatDebug(replay_gain_domain,
 			    "scale=%f\n", (double)scale);
 
 		volume = pcm_float_to_volume(scale);
 	}
-
-	pv.SetVolume(volume);
 
 	if (mixer != nullptr) {
 		/* update the hardware mixer volume */
@@ -143,66 +161,56 @@ ReplayGainFilter::Update()
 		if (_volume > 100)
 			_volume = 100;
 
-		Error error;
-		if (!mixer_set_volume(mixer, _volume, error))
-			LogError(error, "Failed to update hardware mixer");
-	}
+		try {
+			mixer_set_volume(mixer, _volume);
+		} catch (const std::runtime_error &e) {
+			LogError(e, "Failed to update hardware mixer");
+		}
+	} else
+		pv.SetVolume(volume);
 }
 
-static Filter *
-replay_gain_filter_init(gcc_unused const ConfigBlock &block,
-			gcc_unused Error &error)
+PreparedFilter *
+NewReplayGainFilter(const ReplayGainConfig &config)
 {
-	return new ReplayGainFilter();
+	return new PreparedReplayGainFilter(config);
 }
 
-AudioFormat
-ReplayGainFilter::Open(AudioFormat &af, gcc_unused Error &error)
+Filter *
+PreparedReplayGainFilter::Open(AudioFormat &af)
 {
-	if (!pv.Open(af.format, error))
-		return AudioFormat::Undefined();
-
-	return af;
-}
-
-void
-ReplayGainFilter::Close()
-{
-	pv.Close();
+	return new ReplayGainFilter(config, af, mixer, base);
 }
 
 ConstBuffer<void>
-ReplayGainFilter::FilterPCM(ConstBuffer<void> src, gcc_unused Error &error)
+ReplayGainFilter::FilterPCM(ConstBuffer<void> src)
 {
-	return pv.Apply(src);
+	return mixer != nullptr
+		? src
+		: pv.Apply(src);
 }
 
-const struct filter_plugin replay_gain_filter_plugin = {
-	"replay_gain",
-	replay_gain_filter_init,
-};
-
 void
-replay_gain_filter_set_mixer(Filter *_filter, Mixer *mixer,
+replay_gain_filter_set_mixer(PreparedFilter &_filter, Mixer *mixer,
 			     unsigned base)
 {
-	ReplayGainFilter *filter = (ReplayGainFilter *)_filter;
+	auto &filter = (PreparedReplayGainFilter &)_filter;
 
-	filter->SetMixer(mixer, base);
+	filter.SetMixer(mixer, base);
 }
 
 void
-replay_gain_filter_set_info(Filter *_filter, const ReplayGainInfo *info)
+replay_gain_filter_set_info(Filter &_filter, const ReplayGainInfo *info)
 {
-	ReplayGainFilter *filter = (ReplayGainFilter *)_filter;
+	auto &filter = (ReplayGainFilter &)_filter;
 
-	filter->SetInfo(info);
+	filter.SetInfo(info);
 }
 
 void
-replay_gain_filter_set_mode(Filter *_filter, ReplayGainMode mode)
+replay_gain_filter_set_mode(Filter &_filter, ReplayGainMode mode)
 {
-	ReplayGainFilter *filter = (ReplayGainFilter *)_filter;
+	auto &filter = (ReplayGainFilter &)_filter;
 
-	filter->SetMode(mode);
+	filter.SetMode(mode);
 }

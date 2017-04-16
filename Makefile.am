@@ -20,6 +20,7 @@ noinst_LIBRARIES = \
 	libevent.a \
 	libicu.a \
 	libpcm.a \
+	libbasic.a \
 	libconf.a \
 	libtag.a \
 	libinput.a \
@@ -54,6 +55,7 @@ src_mpd_LDADD = \
 	$(ENCODER_LIBS) \
 	$(MIXER_LIBS) \
 	libconf.a \
+	libbasic.a \
 	libevent.a \
 	libthread.a \
 	libnet.a \
@@ -74,10 +76,6 @@ libmpd_a_SOURCES = \
 	src/open.h \
 	src/poison.h \
 	src/notify.cxx src/notify.hxx \
-	src/AudioConfig.cxx src/AudioConfig.hxx \
-	src/CheckAudioFormat.cxx src/CheckAudioFormat.hxx \
-	src/AudioFormat.cxx src/AudioFormat.hxx \
-	src/AudioParser.cxx src/AudioParser.hxx \
 	src/protocol/Ack.cxx src/protocol/Ack.hxx \
 	src/protocol/ArgParser.cxx src/protocol/ArgParser.hxx \
 	src/protocol/Result.cxx src/protocol/Result.hxx \
@@ -92,21 +90,25 @@ libmpd_a_SOURCES = \
 	src/command/FileCommands.cxx src/command/FileCommands.hxx \
 	src/command/OutputCommands.cxx src/command/OutputCommands.hxx \
 	src/command/MessageCommands.cxx src/command/MessageCommands.hxx \
+	src/command/ClientCommands.cxx src/command/ClientCommands.hxx \
+	src/command/PartitionCommands.cxx src/command/PartitionCommands.hxx \
 	src/command/OtherCommands.cxx src/command/OtherCommands.hxx \
 	src/command/CommandListBuilder.cxx src/command/CommandListBuilder.hxx \
 	src/Idle.cxx src/Idle.hxx \
+	src/IdleFlags.cxx src/IdleFlags.hxx \
 	src/decoder/DecoderError.cxx src/decoder/DecoderError.hxx \
 	src/decoder/DecoderThread.cxx src/decoder/DecoderThread.hxx \
 	src/decoder/DecoderCommand.hxx \
 	src/decoder/DecoderControl.cxx src/decoder/DecoderControl.hxx \
-	src/decoder/DecoderAPI.cxx src/decoder/DecoderAPI.hxx \
+	src/decoder/Client.hxx \
 	src/decoder/DecoderPlugin.hxx \
-	src/decoder/DecoderInternal.cxx src/decoder/DecoderInternal.hxx \
+	src/decoder/Bridge.cxx src/decoder/Bridge.hxx \
 	src/decoder/DecoderPrint.cxx src/decoder/DecoderPrint.hxx \
 	src/filter/FilterConfig.cxx src/filter/FilterConfig.hxx \
 	src/filter/FilterPlugin.cxx src/filter/FilterPlugin.hxx \
 	src/filter/FilterInternal.hxx \
 	src/filter/FilterRegistry.cxx src/filter/FilterRegistry.hxx \
+	src/filter/Observer.cxx src/filter/Observer.hxx \
 	src/client/Client.cxx src/client/Client.hxx \
 	src/client/ClientInternal.hxx \
 	src/client/ClientEvent.cxx \
@@ -128,10 +130,8 @@ libmpd_a_SOURCES = \
 	src/Log.cxx src/Log.hxx src/LogV.hxx \
 	src/LogLevel.hxx \
 	src/ls.cxx src/ls.hxx \
-	src/IOThread.cxx src/IOThread.hxx \
 	src/Instance.cxx src/Instance.hxx \
 	src/win32/Win32Main.cxx \
-	src/GlobalEvents.cxx src/GlobalEvents.hxx \
 	src/MixRampInfo.hxx \
 	src/MusicBuffer.cxx src/MusicBuffer.hxx \
 	src/MusicPipe.cxx src/MusicPipe.hxx \
@@ -144,7 +144,6 @@ libmpd_a_SOURCES = \
 	src/player/Control.cxx src/player/Control.hxx \
 	src/player/Listener.hxx \
 	src/PlaylistError.cxx src/PlaylistError.hxx \
-	src/PlaylistGlobal.cxx src/PlaylistGlobal.hxx \
 	src/PlaylistPrint.cxx src/PlaylistPrint.hxx \
 	src/PlaylistSave.cxx src/PlaylistSave.hxx \
 	src/playlist/PlaylistStream.cxx src/playlist/PlaylistStream.hxx \
@@ -165,8 +164,9 @@ libmpd_a_SOURCES = \
 	src/queue/PlaylistEdit.cxx \
 	src/queue/PlaylistTag.cxx \
 	src/queue/PlaylistState.cxx src/queue/PlaylistState.hxx \
-	src/ReplayGainConfig.cxx src/ReplayGainConfig.hxx \
-	src/ReplayGainInfo.cxx src/ReplayGainInfo.hxx \
+	src/queue/Listener.hxx \
+	src/PluginUnavailable.hxx \
+	src/ReplayGainGlobal.cxx src/ReplayGainGlobal.hxx \
 	src/DetachedSong.cxx src/DetachedSong.hxx \
 	src/LocateUri.cxx src/LocateUri.hxx \
 	src/SongUpdate.cxx \
@@ -224,7 +224,7 @@ libmpd_a_SOURCES += \
 	src/db/DatabasePrint.cxx src/db/DatabasePrint.hxx \
 	src/db/DatabaseQueue.cxx src/db/DatabaseQueue.hxx \
 	src/db/DatabasePlaylist.cxx src/db/DatabasePlaylist.hxx \
-	src/db/DatabaseError.cxx src/db/DatabaseError.hxx \
+	src/db/DatabaseError.hxx \
 	src/db/DatabaseLock.cxx src/db/DatabaseLock.hxx \
 	src/db/DatabasePlugin.hxx \
 	src/db/Interface.hxx \
@@ -234,19 +234,31 @@ libmpd_a_SOURCES += \
 	src/db/Selection.cxx src/db/Selection.hxx
 endif
 
+CURL_SOURCES = \
+	src/lib/curl/Version.cxx src/lib/curl/Version.hxx \
+	src/lib/curl/Global.cxx src/lib/curl/Global.hxx \
+	src/lib/curl/Request.cxx src/lib/curl/Request.hxx \
+	src/lib/curl/Handler.hxx \
+	src/lib/curl/Easy.hxx \
+	src/lib/curl/Multi.hxx \
+	src/lib/curl/Slist.hxx
+
 UPNP_SOURCES = \
 	src/lib/upnp/Init.cxx src/lib/upnp/Init.hxx \
 	src/lib/upnp/ClientInit.cxx src/lib/upnp/ClientInit.hxx \
 	src/lib/upnp/Device.cxx src/lib/upnp/Device.hxx \
 	src/lib/upnp/ContentDirectoryService.cxx src/lib/upnp/ContentDirectoryService.hxx \
 	src/lib/upnp/Discovery.cxx src/lib/upnp/Discovery.hxx \
-	src/lib/upnp/Domain.cxx src/lib/upnp/Domain.hxx \
 	src/lib/upnp/ixmlwrap.cxx src/lib/upnp/ixmlwrap.hxx \
 	src/lib/upnp/Callback.hxx \
 	src/lib/upnp/Util.cxx src/lib/upnp/Util.hxx \
 	src/lib/upnp/UniqueIxml.hxx \
 	src/lib/upnp/WorkQueue.hxx \
 	src/lib/upnp/Action.hxx
+
+ALSA_SOURCES = \
+	src/lib/alsa/Version.cxx src/lib/alsa/Version.hxx \
+	src/lib/alsa/NonBlock.cxx src/lib/alsa/NonBlock.hxx
 
 #
 # Android native library
@@ -351,7 +363,7 @@ endif
 src/haiku/mpd.rsrc: src/haiku/mpd.rdef
 	$(RC) -o $@ $<
 
-if HAVE_HAIKU
+if ENABLE_HAIKU
 noinst_DATA = src/haiku/mpd.rdef
 
 EXTRA_src_mpd_DEPENDENCIES = src/haiku/mpd.rsrc
@@ -379,7 +391,7 @@ endif
 if ENABLE_SQLITE
 libmpd_a_SOURCES += \
 	src/command/StickerCommands.cxx src/command/StickerCommands.hxx \
-	src/lib/sqlite/Domain.cxx src/lib/sqlite/Domain.hxx \
+	src/lib/sqlite/Error.cxx src/lib/sqlite/Error.hxx \
 	src/lib/sqlite/Util.hxx \
 	src/sticker/Match.hxx \
 	src/sticker/StickerDatabase.cxx src/sticker/StickerDatabase.hxx \
@@ -390,21 +402,26 @@ endif
 # Generic utility library
 
 libutil_a_SOURCES = \
+	src/util/Exception.cxx src/util/Exception.hxx \
 	src/util/RuntimeError.hxx \
 	src/util/Macros.hxx \
+	src/util/BindMethod.hxx \
 	src/util/Cast.hxx \
+	src/util/Chrono.hxx \
 	src/util/Clamp.hxx \
 	src/util/DeleteDisposer.hxx \
 	src/util/Alloc.cxx src/util/Alloc.hxx \
+	src/util/AllocatedArray.hxx \
 	src/util/VarSize.hxx \
 	src/util/ScopeExit.hxx \
-	src/util/Error.cxx src/util/Error.hxx \
 	src/util/Domain.hxx \
 	src/util/ReusableArray.hxx \
 	src/util/ASCII.hxx \
 	src/util/UTF8.cxx src/util/UTF8.hxx \
 	src/util/CharUtil.hxx \
 	src/util/NumberParser.hxx \
+	src/util/MimeType.cxx src/util/MimeType.hxx \
+	src/util/StringBuffer.hxx \
 	src/util/StringPointer.hxx \
 	src/util/StringView.cxx src/util/StringView.hxx \
 	src/util/AllocatedString.cxx src/util/AllocatedString.hxx \
@@ -415,9 +432,11 @@ libutil_a_SOURCES = \
 	src/util/WStringAPI.hxx \
 	src/util/DivideString.cxx src/util/DivideString.hxx \
 	src/util/SplitString.cxx src/util/SplitString.hxx \
+	src/util/IterableSplitString.hxx \
 	src/util/FormatString.cxx src/util/FormatString.hxx \
 	src/util/Tokenizer.cxx src/util/Tokenizer.hxx \
 	src/util/TextFile.hxx \
+	src/util/TimeParser.cxx src/util/TimeParser.hxx \
 	src/util/UriUtil.cxx src/util/UriUtil.hxx \
 	src/util/Manual.hxx \
 	src/util/RefCount.hxx \
@@ -440,7 +459,7 @@ libutil_a_SOURCES = \
 # Multi-threading library
 
 libthread_a_SOURCES = \
-	src/thread/Util.hxx \
+	src/thread/Util.cxx src/thread/Util.hxx \
 	src/thread/Name.hxx \
 	src/thread/Slack.hxx \
 	src/thread/Mutex.hxx \
@@ -455,6 +474,7 @@ libthread_a_SOURCES = \
 # Networking library
 
 libnet_a_SOURCES = \
+	src/net/Features.hxx \
 	src/net/ToString.cxx src/net/ToString.hxx \
 	src/net/Resolver.cxx src/net/Resolver.hxx \
 	src/net/StaticSocketAddress.cxx src/net/StaticSocketAddress.hxx \
@@ -491,20 +511,22 @@ libevent_a_SOURCES = \
 	src/event/TimeoutMonitor.hxx src/event/TimeoutMonitor.cxx \
 	src/event/IdleMonitor.hxx src/event/IdleMonitor.cxx \
 	src/event/DeferredMonitor.hxx src/event/DeferredMonitor.cxx \
+	src/event/DeferredCall.hxx \
+	src/event/MaskMonitor.hxx src/event/MaskMonitor.cxx \
 	src/event/SocketMonitor.cxx src/event/SocketMonitor.hxx \
 	src/event/BufferedSocket.cxx src/event/BufferedSocket.hxx \
 	src/event/FullyBufferedSocket.cxx src/event/FullyBufferedSocket.hxx \
 	src/event/MultiSocketMonitor.cxx src/event/MultiSocketMonitor.hxx \
 	src/event/ServerSocket.cxx src/event/ServerSocket.hxx \
 	src/event/Call.hxx src/event/Call.cxx \
+	src/event/Thread.cxx src/event/Thread.hxx \
 	src/event/Loop.cxx src/event/Loop.hxx
 
 # UTF-8 library
 
 libicu_a_SOURCES = \
 	src/lib/icu/Collate.cxx src/lib/icu/Collate.hxx \
-	src/lib/icu/Converter.cxx src/lib/icu/Converter.hxx \
-	src/lib/icu/Error.cxx src/lib/icu/Error.hxx
+	src/lib/icu/Converter.cxx src/lib/icu/Converter.hxx
 
 if HAVE_ICU
 libicu_a_SOURCES += \
@@ -525,7 +547,10 @@ ICU_LDADD = libicu.a $(ICU_LIBS)
 # PCM library
 
 libpcm_a_SOURCES = \
-	src/pcm/Domain.cxx src/pcm/Domain.hxx \
+	src/CheckAudioFormat.cxx src/CheckAudioFormat.hxx \
+	src/AudioFormat.cxx src/AudioFormat.hxx \
+	src/AudioParser.cxx src/AudioParser.hxx \
+	src/pcm/SampleFormat.cxx src/pcm/SampleFormat.hxx \
 	src/pcm/Traits.hxx \
 	src/pcm/Interleave.cxx src/pcm/Interleave.hxx \
 	src/pcm/PcmBuffer.cxx src/pcm/PcmBuffer.hxx \
@@ -533,6 +558,7 @@ libpcm_a_SOURCES = \
 	src/pcm/PcmConvert.cxx src/pcm/PcmConvert.hxx \
 	src/pcm/PcmDop.cxx src/pcm/PcmDop.hxx \
 	src/pcm/Volume.cxx src/pcm/Volume.hxx \
+	src/pcm/Silence.cxx src/pcm/Silence.hxx \
 	src/pcm/PcmMix.cxx src/pcm/PcmMix.hxx \
 	src/pcm/PcmChannels.cxx src/pcm/PcmChannels.hxx \
 	src/pcm/PcmPack.cxx src/pcm/PcmPack.hxx \
@@ -561,6 +587,8 @@ PCM_LIBS = \
 
 if ENABLE_DSD
 libpcm_a_SOURCES += \
+	src/pcm/Dsd16.cxx src/pcm/Dsd16.hxx \
+	src/pcm/Dsd32.cxx src/pcm/Dsd32.hxx \
 	src/pcm/PcmDsd.cxx src/pcm/PcmDsd.hxx \
 	src/pcm/dsd2pcm/dsd2pcm.c src/pcm/dsd2pcm/dsd2pcm.h
 endif
@@ -573,6 +601,35 @@ endif
 if ENABLE_SOXR
 libpcm_a_SOURCES += \
 	src/pcm/SoxrResampler.cxx src/pcm/SoxrResampler.hxx
+endif
+
+# Xiph codec support library
+
+if HAVE_XIPH
+
+noinst_LIBRARIES += libxiph.a
+
+libxiph_a_SOURCES = \
+	src/lib/xiph/VorbisComment.hxx \
+	src/lib/xiph/VorbisComments.cxx src/lib/xiph/VorbisComments.hxx \
+	src/lib/xiph/XiphTags.cxx src/lib/xiph/XiphTags.hxx
+libxiph_a_CPPFLAGS = $(AM_CPPFLAGS) \
+	$(OGG_CFLAGS)
+
+if HAVE_OGG
+libxiph_a_SOURCES += \
+	src/lib/xiph/OggVisitor.cxx src/lib/xiph/OggVisitor.hxx \
+	src/lib/xiph/OggSerial.cxx src/lib/xiph/OggSerial.hxx \
+	src/lib/xiph/OggSyncState.cxx src/lib/xiph/OggSyncState.hxx \
+	src/lib/xiph/OggFind.cxx src/lib/xiph/OggFind.hxx \
+	src/lib/xiph/OggPage.hxx \
+	src/lib/xiph/OggPacket.cxx src/lib/xiph/OggPacket.hxx \
+	src/lib/xiph/OggStreamState.hxx
+endif
+
+XIPH_LIBS = libxiph.a \
+	$(OGG_LIBS)
+
 endif
 
 # File system library
@@ -607,7 +664,6 @@ libfs_a_CPPFLAGS = $(AM_CPPFLAGS) $(ZLIB_CFLAGS)
 
 if ENABLE_ZLIB
 libfs_a_SOURCES += \
-	src/lib/zlib/Domain.cxx src/lib/zlib/Domain.hxx \
 	src/lib/zlib/Error.cxx src/lib/zlib/Error.hxx \
 	src/fs/io/GunzipReader.cxx src/fs/io/GunzipReader.hxx \
 	src/fs/io/AutoGunzipReader.cxx src/fs/io/AutoGunzipReader.hxx \
@@ -636,8 +692,7 @@ NFS_SOURCES = \
 	src/lib/nfs/Glue.cxx src/lib/nfs/Glue.hxx \
 	src/lib/nfs/Base.cxx src/lib/nfs/Base.hxx \
 	src/lib/nfs/FileReader.cxx src/lib/nfs/FileReader.hxx \
-	src/lib/nfs/Blocking.cxx src/lib/nfs/Blocking.hxx \
-	src/lib/nfs/Domain.cxx src/lib/nfs/Domain.hxx
+	src/lib/nfs/Blocking.cxx src/lib/nfs/Blocking.hxx
 
 if ENABLE_DATABASE
 
@@ -659,6 +714,8 @@ libstorage_a_CPPFLAGS = $(AM_CPPFLAGS) \
 
 STORAGE_LIBS = \
 	libstorage.a \
+	$(CURL_LIBS) \
+	$(EXPAT_LIBS) \
 	$(NFS_LIBS) \
 	$(SMBCLIENT_LIBS)
 
@@ -672,6 +729,12 @@ if ENABLE_NFS
 libstorage_a_SOURCES += \
 	$(NFS_SOURCES) \
 	src/storage/plugins/NfsStorage.cxx src/storage/plugins/NfsStorage.hxx
+endif
+
+if ENABLE_WEBDAV
+libstorage_a_SOURCES += \
+	src/lib/expat/ExpatParser.cxx \
+	src/storage/plugins/CurlStorage.cxx src/storage/plugins/CurlStorage.hxx
 endif
 
 endif
@@ -733,7 +796,6 @@ libdb_plugins_a_SOURCES = \
 	src/db/plugins/simple/DatabaseSave.hxx \
 	src/db/plugins/simple/DirectorySave.cxx \
 	src/db/plugins/simple/DirectorySave.hxx \
-	src/db/plugins/LazyDatabase.cxx src/db/plugins/LazyDatabase.hxx \
 	src/db/plugins/simple/Directory.cxx \
 	src/db/plugins/simple/Directory.hxx \
 	src/db/plugins/simple/Song.cxx \
@@ -821,6 +883,11 @@ else
 ARCHIVE_LIBS =
 endif
 
+libbasic_a_SOURCES = \
+	src/ReplayGainConfig.hxx \
+	src/ReplayGainMode.cxx src/ReplayGainMode.hxx \
+	src/ReplayGainInfo.cxx src/ReplayGainInfo.hxx
+
 # configuration library
 
 libconf_a_SOURCES = \
@@ -845,18 +912,19 @@ TAG_LIBS = \
 	$(ID3TAG_LIBS)
 
 libtag_a_SOURCES =\
-	src/tag/TagType.h \
+	src/tag/Type.h \
 	src/tag/Tag.cxx src/tag/Tag.hxx \
-	src/tag/TagBuilder.cxx src/tag/TagBuilder.hxx \
-	src/tag/TagItem.hxx \
-	src/tag/TagHandler.cxx src/tag/TagHandler.hxx \
+	src/tag/Builder.cxx src/tag/Builder.hxx \
+	src/tag/Item.hxx \
+	src/tag/Handler.cxx src/tag/Handler.hxx \
 	src/tag/Mask.hxx \
 	src/tag/Settings.cxx src/tag/Settings.hxx \
-	src/tag/TagConfig.cxx src/tag/TagConfig.hxx \
-	src/tag/TagNames.c \
-	src/tag/TagString.cxx src/tag/TagString.hxx \
-	src/tag/TagPool.cxx src/tag/TagPool.hxx \
-	src/tag/TagTable.cxx src/tag/TagTable.hxx \
+	src/tag/Config.cxx src/tag/Config.hxx \
+	src/tag/ParseName.cxx src/tag/ParseName.hxx \
+	src/tag/Names.c \
+	src/tag/FixString.cxx src/tag/FixString.hxx \
+	src/tag/Pool.cxx src/tag/Pool.hxx \
+	src/tag/Table.cxx src/tag/Table.hxx \
 	src/tag/Set.cxx src/tag/Set.hxx \
 	src/tag/Format.cxx src/tag/Format.hxx \
 	src/tag/VorbisComment.cxx src/tag/VorbisComment.hxx \
@@ -871,8 +939,8 @@ if ENABLE_ID3TAG
 libtag_a_SOURCES += \
 	src/tag/Id3Load.cxx src/tag/Id3Load.hxx \
 	src/tag/Id3Unique.hxx \
-	src/tag/TagId3.cxx src/tag/TagId3.hxx \
-	src/tag/TagRva2.cxx src/tag/TagRva2.hxx \
+	src/tag/Id3Scan.cxx src/tag/Id3Scan.hxx \
+	src/tag/Rva2.cxx src/tag/Rva2.hxx \
 	src/tag/Riff.cxx src/tag/Riff.hxx \
 	src/tag/Aiff.cxx src/tag/Aiff.hxx
 endif
@@ -899,6 +967,8 @@ endif
 libdecoder_a_SOURCES = \
 	src/decoder/plugins/PcmDecoderPlugin.cxx \
 	src/decoder/plugins/PcmDecoderPlugin.hxx \
+	src/decoder/DecoderAPI.cxx src/decoder/DecoderAPI.hxx \
+	src/decoder/Reader.cxx src/decoder/Reader.hxx \
 	src/decoder/DecoderBuffer.cxx src/decoder/DecoderBuffer.hxx \
 	src/decoder/DecoderPlugin.cxx \
 	src/decoder/DecoderList.cxx src/decoder/DecoderList.hxx
@@ -923,6 +993,7 @@ libdecoder_a_CPPFLAGS = $(AM_CPPFLAGS) \
 
 DECODER_LIBS = \
 	libdecoder.a \
+	$(XIPH_LIBS) \
 	$(VORBIS_LIBS) $(TREMOR_LIBS) \
 	$(FLAC_LIBS) \
 	$(SNDFILE_LIBS) \
@@ -970,10 +1041,6 @@ endif
 
 if ENABLE_OPUS
 libdecoder_a_SOURCES += \
-	src/decoder/plugins/OggUtil.cxx \
-	src/decoder/plugins/OggUtil.hxx \
-	src/decoder/plugins/OggSyncState.hxx \
-	src/decoder/plugins/OggFind.cxx src/decoder/plugins/OggFind.hxx \
 	src/decoder/plugins/OpusDomain.cxx src/decoder/plugins/OpusDomain.hxx \
 	src/decoder/plugins/OpusReader.hxx \
 	src/decoder/plugins/OpusHead.hxx \
@@ -1001,16 +1068,19 @@ libdecoder_a_SOURCES += \
 	src/decoder/plugins/FaadDecoderPlugin.cxx src/decoder/plugins/FaadDecoderPlugin.hxx
 endif
 
+if HAVE_OGG
+libdecoder_a_SOURCES += \
+	src/decoder/plugins/OggDecoder.cxx src/decoder/plugins/OggDecoder.hxx
+endif
+
 if HAVE_XIPH
 libdecoder_a_SOURCES += \
-	src/decoder/plugins/XiphTags.cxx src/decoder/plugins/XiphTags.hxx \
 	src/decoder/plugins/OggCodec.cxx src/decoder/plugins/OggCodec.hxx
 endif
 
 if ENABLE_VORBIS_DECODER
 libdecoder_a_SOURCES += \
 	src/decoder/plugins/VorbisDomain.cxx src/decoder/plugins/VorbisDomain.hxx \
-	src/decoder/plugins/VorbisComments.cxx src/decoder/plugins/VorbisComments.hxx \
 	src/decoder/plugins/VorbisDecoderPlugin.cxx src/decoder/plugins/VorbisDecoderPlugin.h
 endif
 
@@ -1022,6 +1092,7 @@ libdecoder_a_SOURCES += \
 	src/decoder/plugins/FlacPcm.cxx src/decoder/plugins/FlacPcm.hxx \
 	src/decoder/plugins/FlacDomain.cxx src/decoder/plugins/FlacDomain.hxx \
 	src/decoder/plugins/FlacCommon.cxx src/decoder/plugins/FlacCommon.hxx \
+	src/decoder/plugins/FlacStreamDecoder.hxx \
 	src/decoder/plugins/FlacDecoderPlugin.cxx \
 	src/decoder/plugins/FlacDecoderPlugin.h
 endif
@@ -1103,6 +1174,7 @@ libencoder_plugins_a_CPPFLAGS = $(AM_CPPFLAGS) \
 
 ENCODER_LIBS = \
 	libencoder_plugins.a \
+	$(XIPH_LIBS) \
 	$(LAME_LIBS) \
 	$(TWOLAME_LIBS) \
 	$(FLAC_LIBS) \
@@ -1115,22 +1187,19 @@ libencoder_plugins_a_SOURCES = \
 	src/encoder/EncoderInterface.hxx \
 	src/encoder/EncoderPlugin.hxx \
 	src/encoder/ToOutputStream.cxx src/encoder/ToOutputStream.hxx \
-	src/encoder/plugins/OggStream.hxx \
 	src/encoder/plugins/NullEncoderPlugin.cxx \
 	src/encoder/plugins/NullEncoderPlugin.hxx \
 	src/encoder/EncoderList.cxx src/encoder/EncoderList.hxx
-
-if HAVE_OGG_ENCODER
-libencoder_plugins_a_SOURCES += \
-	src/encoder/plugins/OggSerial.cxx \
-	src/encoder/plugins/OggSerial.hxx \
-	src/encoder/plugins/OggStream.hxx
-endif
 
 if ENABLE_WAVE_ENCODER
 libencoder_plugins_a_SOURCES += \
 	src/encoder/plugins/WaveEncoderPlugin.cxx \
 	src/encoder/plugins/WaveEncoderPlugin.hxx
+endif
+
+if HAVE_OGG
+libencoder_plugins_a_SOURCES += \
+	src/encoder/plugins/OggEncoder.hxx
 endif
 
 if ENABLE_VORBISENC
@@ -1202,7 +1271,9 @@ libinput_a_SOURCES = \
 	src/input/LocalOpen.cxx src/input/LocalOpen.hxx \
 	src/input/Offset.hxx \
 	src/input/InputStream.cxx src/input/InputStream.hxx \
+	src/input/Ptr.hxx \
 	src/input/InputPlugin.hxx \
+	src/input/Reader.cxx src/input/Reader.hxx \
 	src/input/TextInputStream.cxx src/input/TextInputStream.hxx \
 	src/input/ThreadInputStream.cxx src/input/ThreadInputStream.hxx \
 	src/input/AsyncInputStream.cxx src/input/AsyncInputStream.hxx \
@@ -1229,6 +1300,7 @@ INPUT_LIBS = \
 
 if ENABLE_ALSA
 libinput_a_SOURCES += \
+	$(ALSA_SOURCES) \
 	src/input/plugins/AlsaInputPlugin.cxx \
 	src/input/plugins/AlsaInputPlugin.hxx
 INPUT_LIBS += $(ALSA_LIBS)
@@ -1239,6 +1311,7 @@ if ENABLE_CURL
 libinput_a_SOURCES += \
 	src/input/IcyInputStream.cxx src/input/IcyInputStream.hxx \
 	src/input/plugins/CurlInputPlugin.cxx src/input/plugins/CurlInputPlugin.hxx \
+	$(CURL_SOURCES) \
 	src/IcyMetaDataParser.cxx src/IcyMetaDataParser.hxx
 endif
 
@@ -1274,9 +1347,11 @@ liboutput_plugins_a_CPPFLAGS = $(AM_CPPFLAGS) \
 	$(AO_CFLAGS) \
 	$(ALSA_CFLAGS) \
 	$(JACK_CFLAGS) \
+	$(HAIKU_CFLAGS) \
 	$(OPENAL_CFLAGS) \
 	$(OPENSSL_CFLAGS) \
 	$(PULSE_CFLAGS) \
+	$(SNDIO_CFLAGS) \
 	$(SHOUT_CFLAGS)
 
 OUTPUT_LIBS = \
@@ -1286,15 +1361,21 @@ OUTPUT_LIBS = \
 	$(ALSA_LIBS) \
 	$(ROAR_LIBS) \
 	$(JACK_LIBS) \
+	$(HAIKU_LIBS) \
 	$(OPENAL_LIBS) \
+	$(SNDIO_LIBS) \
 	$(SHOUT_LIBS)
 
 OUTPUT_API_SRC = \
+	src/output/Client.hxx \
 	src/output/OutputAPI.hxx \
+	src/output/Internal.cxx \
 	src/output/Internal.hxx \
 	src/output/Wrapper.hxx \
 	src/output/Registry.cxx src/output/Registry.hxx \
 	src/output/MultipleOutputs.cxx src/output/MultipleOutputs.hxx \
+	src/output/SharedPipeConsumer.cxx src/output/SharedPipeConsumer.hxx \
+	src/output/Source.cxx src/output/Source.hxx \
 	src/output/OutputThread.cxx \
 	src/output/Domain.cxx src/output/Domain.hxx \
 	src/output/OutputControl.cxx \
@@ -1328,15 +1409,21 @@ libmixer_plugins_a_SOURCES = \
 	src/mixer/plugins/NullMixerPlugin.cxx \
 	src/mixer/plugins/SoftwareMixerPlugin.cxx \
 	src/mixer/plugins/SoftwareMixerPlugin.hxx
+
 libmixer_plugins_a_CPPFLAGS = $(AM_CPPFLAGS) \
 	$(ALSA_CFLAGS) \
 	$(PULSE_CFLAGS)
 
 if ENABLE_ALSA
 liboutput_plugins_a_SOURCES += \
+	$(ALSA_SOURCES) \
 	src/output/plugins/AlsaOutputPlugin.cxx \
 	src/output/plugins/AlsaOutputPlugin.hxx
-libmixer_plugins_a_SOURCES += src/mixer/plugins/AlsaMixerPlugin.cxx
+libmixer_plugins_a_SOURCES += \
+	$(ALSA_SOURCES) \
+	src/mixer/plugins/volume_mapping.h \
+	src/mixer/plugins/volume_mapping.c \
+	src/mixer/plugins/AlsaMixerPlugin.cxx
 endif
 
 if ANDROID
@@ -1369,12 +1456,18 @@ liboutput_plugins_a_SOURCES += \
 	src/output/plugins/FifoOutputPlugin.hxx
 endif
 
-if HAVE_HAIKU
+if ENABLE_SNDIO
+liboutput_plugins_a_SOURCES += \
+	src/output/plugins/SndioOutputPlugin.cxx \
+	src/output/plugins/SndioOutputPlugin.hxx
+endif
+
+if ENABLE_HAIKU
 liboutput_plugins_a_SOURCES += \
 	src/output/plugins/HaikuOutputPlugin.cxx \
 	src/output/plugins/HaikuOutputPlugin.hxx
 libmixer_plugins_a_SOURCES += \
-	src/mixer/plugins/HaikuMixerPlugin.cxx src/mixer/plugins/HaikuMixerPlugin.hxx
+	src/mixer/plugins/HaikuMixerPlugin.cxx
 endif
 
 if ENABLE_PIPE_OUTPUT
@@ -1417,6 +1510,7 @@ libmixer_plugins_a_SOURCES += \
 
 noinst_LIBRARIES += libpulse.a
 libpulse_a_SOURCES = \
+	src/lib/pulse/LockGuard.hxx \
 	src/lib/pulse/LogError.cxx src/lib/pulse/LogError.hxx \
 	src/lib/pulse/Error.cxx src/lib/pulse/Error.hxx \
 	src/lib/pulse/Domain.cxx src/lib/pulse/Domain.hxx
@@ -1512,6 +1606,7 @@ endif
 
 if ENABLE_EXPAT
 libplaylist_plugins_a_SOURCES += \
+	src/lib/expat/StreamExpatParser.cxx \
 	src/lib/expat/ExpatParser.cxx src/lib/expat/ExpatParser.hxx \
 	src/playlist/plugins/XspfPlaylistPlugin.cxx \
 	src/playlist/plugins/XspfPlaylistPlugin.hxx \
@@ -1554,8 +1649,13 @@ FILTER_LIBS = \
 
 if HAVE_SYSTEMD
 systemdsystemunit_DATA = \
-	systemd/mpd.socket \
-	systemd/mpd.service
+	systemd/system/mpd.socket \
+	systemd/system/mpd.service
+endif
+
+if HAVE_SYSTEMD_USER
+systemduserunit_DATA = \
+	systemd/user/mpd.service
 endif
 
 
@@ -1601,6 +1701,7 @@ noinst_PROGRAMS = \
 	test/run_decoder \
 	test/read_tags \
 	test/ReadApeTags \
+	test/ContainerScan \
 	test/run_filter \
 	test/run_output \
 	test/run_convert \
@@ -1656,15 +1757,14 @@ test_DumpDatabase_LDADD = \
 	$(DB_LIBS) \
 	$(TAG_LIBS) \
 	libconf.a \
-	libutil.a \
 	libevent.a \
 	$(FS_LIBS) \
 	libsystem.a \
-	$(ICU_LDADD)
+	$(ICU_LDADD) \
+	libutil.a
 test_DumpDatabase_SOURCES = test/DumpDatabase.cxx \
 	src/protocol/Ack.cxx \
 	src/Log.cxx src/LogBackend.cxx \
-	src/db/DatabaseError.cxx \
 	src/db/Registry.cxx \
 	src/db/Selection.cxx \
 	src/db/PlaylistVector.cxx \
@@ -1688,9 +1788,11 @@ test_run_storage_LDADD = \
 	libutil.a
 test_run_storage_SOURCES = \
 	src/Log.cxx src/LogBackend.cxx \
-	src/IOThread.cxx \
-	test/ScopeIOThread.hxx \
 	test/run_storage.cxx
+
+if ENABLE_WEBDAV
+test_run_storage_SOURCES += $(CURL_SOURCES)
+endif
 
 endif
 
@@ -1706,16 +1808,13 @@ test_run_input_LDADD = \
 	libsystem.a \
 	libutil.a
 test_run_input_SOURCES = test/run_input.cxx \
-	test/ScopeIOThread.hxx \
 	src/Log.cxx src/LogBackend.cxx \
-	src/IOThread.cxx \
 	src/TagSave.cxx
 
 if ENABLE_NEIGHBOR_PLUGINS
 
 test_run_neighbor_explorer_SOURCES = \
 	src/Log.cxx src/LogBackend.cxx \
-	src/IOThread.cxx \
 	test/run_neighbor_explorer.cxx
 test_run_neighbor_explorer_LDADD = $(AM_LDADD) \
 	$(NEIGHBOR_LIBS) \
@@ -1750,9 +1849,7 @@ test_visit_archive_LDADD = \
 	libsystem.a \
 	libutil.a
 test_visit_archive_SOURCES = test/visit_archive.cxx \
-	test/ScopeIOThread.hxx \
 	src/Log.cxx src/LogBackend.cxx \
-	src/IOThread.cxx \
 	src/input/Open.cxx
 
 endif
@@ -1798,18 +1895,18 @@ test_dump_text_file_LDADD = \
 	libthread.a \
 	libutil.a
 test_dump_text_file_SOURCES = test/dump_text_file.cxx \
-	test/ScopeIOThread.hxx \
-	src/Log.cxx src/LogBackend.cxx \
-	src/IOThread.cxx
+	src/Log.cxx src/LogBackend.cxx
 
 test_dump_playlist_LDADD = \
 	$(PLAYLIST_LIBS) \
 	$(FLAC_LIBS) \
-	$(INPUT_LIBS) \
-	$(ARCHIVE_LIBS) \
 	$(DECODER_LIBS) \
 	$(TAG_LIBS) \
+	$(XIPH_LIBS) \
+	$(INPUT_LIBS) \
+	$(ARCHIVE_LIBS) \
 	libconf.a \
+	libbasic.a \
 	libevent.a \
 	libthread.a \
 	$(FS_LIBS) \
@@ -1819,13 +1916,9 @@ test_dump_playlist_LDADD = \
 	libpcm.a
 test_dump_playlist_SOURCES = test/dump_playlist.cxx \
 	test/FakeDecoderAPI.cxx test/FakeDecoderAPI.hxx \
-	test/ScopeIOThread.hxx \
-	$(DECODER_SRC) \
 	src/Log.cxx src/LogBackend.cxx \
-	src/IOThread.cxx \
 	src/TagSave.cxx \
 	src/TagFile.cxx \
-	src/AudioFormat.cxx src/CheckAudioFormat.cxx \
 	src/DetachedSong.cxx
 
 if ENABLE_FLAC
@@ -1841,6 +1934,7 @@ test_run_decoder_LDADD = \
 	$(ARCHIVE_LIBS) \
 	$(TAG_LIBS) \
 	libconf.a \
+	libbasic.a \
 	libevent.a \
 	libthread.a \
 	$(FS_LIBS) \
@@ -1849,15 +1943,9 @@ test_run_decoder_LDADD = \
 	libutil.a
 test_run_decoder_SOURCES = test/run_decoder.cxx \
 	test/FakeDecoderAPI.cxx test/FakeDecoderAPI.hxx \
-	test/ScopeIOThread.hxx \
+	src/DetachedSong.cxx \
 	src/Log.cxx src/LogBackend.cxx \
-	src/IOThread.cxx \
-	src/ReplayGainInfo.cxx \
-	src/AudioFormat.cxx src/CheckAudioFormat.cxx \
-	$(ARCHIVE_SRC) \
-	$(INPUT_SRC) \
-	$(TAG_SRC) \
-	$(DECODER_SRC)
+	src/ReplayGainInfo.cxx
 
 test_read_tags_LDADD = \
 	$(DECODER_LIBS) \
@@ -1866,6 +1954,7 @@ test_read_tags_LDADD = \
 	$(ARCHIVE_LIBS) \
 	$(TAG_LIBS) \
 	libconf.a \
+	libbasic.a \
 	libevent.a \
 	libthread.a \
 	$(FS_LIBS) \
@@ -1874,12 +1963,9 @@ test_read_tags_LDADD = \
 	libutil.a
 test_read_tags_SOURCES = test/read_tags.cxx \
 	test/FakeDecoderAPI.cxx test/FakeDecoderAPI.hxx \
-	test/ScopeIOThread.hxx \
+	src/DetachedSong.cxx \
 	src/Log.cxx src/LogBackend.cxx \
-	src/IOThread.cxx \
-	src/ReplayGainInfo.cxx \
-	src/AudioFormat.cxx src/CheckAudioFormat.cxx \
-	$(DECODER_SRC)
+	src/ReplayGainInfo.cxx
 
 test_ReadApeTags_LDADD = \
 	$(TAG_LIBS) \
@@ -1892,6 +1978,27 @@ test_ReadApeTags_LDADD = \
 test_ReadApeTags_SOURCES = \
 	src/Log.cxx src/LogBackend.cxx \
 	test/ReadApeTags.cxx
+
+test_ContainerScan_LDADD = \
+	$(DECODER_LIBS) \
+	libpcm.a \
+	$(INPUT_LIBS) \
+	$(ARCHIVE_LIBS) \
+	$(TAG_LIBS) \
+	libconf.a \
+	libbasic.a \
+	libevent.a \
+	libthread.a \
+	$(FS_LIBS) \
+	$(ICU_LDADD) \
+	libsystem.a \
+	libutil.a
+test_ContainerScan_SOURCES = test/ContainerScan.cxx \
+	src/DetachedSong.cxx \
+	src/SongSave.cxx src/TagSave.cxx \
+	src/Log.cxx src/LogBackend.cxx \
+	src/ReplayGainInfo.cxx \
+	$(DECODER_SRC)
 
 if ENABLE_ID3TAG
 test_dump_rva2_LDADD = \
@@ -1910,30 +2017,24 @@ endif
 test_run_filter_LDADD = \
 	$(FILTER_LIBS) \
 	libconf.a \
+	libbasic.a \
 	$(FS_LIBS) \
 	$(ICU_LDADD) \
 	libsystem.a \
 	libutil.a
 test_run_filter_SOURCES = test/run_filter.cxx \
-	test/FakeReplayGainConfig.cxx \
 	src/Log.cxx src/LogBackend.cxx \
-	src/filter/FilterPlugin.cxx src/filter/FilterRegistry.cxx \
-	src/CheckAudioFormat.cxx \
-	src/AudioFormat.cxx \
-	src/AudioParser.cxx \
-	src/ReplayGainInfo.cxx
+	src/filter/FilterPlugin.cxx src/filter/FilterRegistry.cxx
 
 if ENABLE_ENCODER
 noinst_PROGRAMS += test/run_encoder
 test_run_encoder_SOURCES = test/run_encoder.cxx \
-	src/Log.cxx src/LogBackend.cxx \
-	src/CheckAudioFormat.cxx \
-	src/AudioFormat.cxx \
-	src/AudioParser.cxx
+	src/Log.cxx src/LogBackend.cxx
 test_run_encoder_LDADD = \
 	$(ENCODER_LIBS) \
 	$(TAG_LIBS) \
 	libconf.a \
+	libbasic.a \
 	libpcm.a \
 	libthread.a \
 	$(FS_LIBS) \
@@ -1945,11 +2046,7 @@ endif
 if ENABLE_VORBISENC
 noinst_PROGRAMS += test/test_vorbis_encoder
 test_test_vorbis_encoder_SOURCES = test/test_vorbis_encoder.cxx \
-	src/Log.cxx src/LogBackend.cxx \
-	src/CheckAudioFormat.cxx \
-	src/AudioFormat.cxx \
-	src/AudioParser.cxx \
-	$(ENCODER_SRC)
+	src/Log.cxx src/LogBackend.cxx
 test_test_vorbis_encoder_CPPFLAGS = $(AM_CPPFLAGS) \
 	$(ENCODER_CFLAGS)
 test_test_vorbis_encoder_LDADD = $(MPD_LIBS) \
@@ -1957,6 +2054,7 @@ test_test_vorbis_encoder_LDADD = $(MPD_LIBS) \
 	$(PCM_LIBS) \
 	$(TAG_LIBS) \
 	libconf.a \
+	libbasic.a \
 	$(FS_LIBS) \
 	$(ICU_LDADD) \
 	libsystem.a \
@@ -1964,11 +2062,10 @@ test_test_vorbis_encoder_LDADD = $(MPD_LIBS) \
 endif
 
 test_software_volume_SOURCES = test/software_volume.cxx \
-	src/Log.cxx src/LogBackend.cxx \
-	src/AudioFormat.cxx src/CheckAudioFormat.cxx \
-	src/AudioParser.cxx
+	src/Log.cxx src/LogBackend.cxx
 test_software_volume_LDADD = \
 	$(PCM_LIBS) \
+	libbasic.a \
 	libutil.a
 
 test_run_avahi_SOURCES = \
@@ -1985,6 +2082,7 @@ test_run_avahi_LDADD = \
 	$(AVAHI_LIBS)
 
 test_run_normalize_SOURCES = test/run_normalize.cxx \
+	src/Log.cxx src/LogBackend.cxx \
 	src/CheckAudioFormat.cxx \
 	src/AudioCompress/compress.c \
 	src/AudioParser.cxx
@@ -1992,17 +2090,15 @@ test_run_normalize_LDADD = \
 	libutil.a
 
 test_run_convert_SOURCES = test/run_convert.cxx \
-	src/Log.cxx src/LogBackend.cxx \
-	src/AudioFormat.cxx \
-	src/CheckAudioFormat.cxx \
-	src/AudioParser.cxx
+	src/Log.cxx src/LogBackend.cxx
 test_run_convert_LDADD = \
 	$(PCM_LIBS) \
 	libconf.a \
+	libbasic.a \
 	$(FS_LIBS) \
 	libsystem.a \
-	libutil.a \
-	$(ICU_LDADD)
+	$(ICU_LDADD) \
+	libutil.a
 
 test_run_output_LDADD = $(MPD_LIBS) \
 	$(PCM_LIBS) \
@@ -2012,6 +2108,7 @@ test_run_output_LDADD = $(MPD_LIBS) \
 	$(FILTER_LIBS) \
 	$(TAG_LIBS) \
 	libconf.a \
+	libbasic.a \
 	libevent.a \
 	$(FS_LIBS) \
 	$(ICU_LDADD) \
@@ -2020,13 +2117,7 @@ test_run_output_LDADD = $(MPD_LIBS) \
 	libthread.a \
 	libutil.a
 test_run_output_SOURCES = test/run_output.cxx \
-	test/FakeReplayGainConfig.cxx \
-	test/ScopeIOThread.hxx \
 	src/Log.cxx src/LogBackend.cxx \
-	src/IOThread.cxx \
-	src/CheckAudioFormat.cxx \
-	src/AudioFormat.cxx \
-	src/AudioParser.cxx \
 	src/output/Domain.cxx \
 	src/output/Init.cxx src/output/Finish.cxx src/output/Registry.cxx \
 	src/output/OutputPlugin.cxx \
@@ -2034,13 +2125,14 @@ test_run_output_SOURCES = test/run_output.cxx \
 	src/mixer/MixerType.cxx \
 	src/filter/FilterPlugin.cxx \
 	src/filter/FilterConfig.cxx \
-	src/ReplayGainInfo.cxx
+	src/filter/Observer.cxx
 
 test_read_mixer_LDADD = \
 	libpcm.a \
 	libmixer_plugins.a \
 	$(OUTPUT_LIBS) \
 	libconf.a \
+	libbasic.a \
 	libevent.a \
 	$(FS_LIBS) \
 	$(ICU_LDADD) \
@@ -2050,7 +2142,6 @@ test_read_mixer_SOURCES = test/read_mixer.cxx \
 	src/Log.cxx src/LogBackend.cxx \
 	src/mixer/MixerControl.cxx \
 	src/filter/FilterPlugin.cxx \
-	src/AudioFormat.cxx \
 	src/filter/plugins/VolumeFilterPlugin.cxx
 
 if ENABLE_BZIP2_TEST
@@ -2082,6 +2173,7 @@ test_test_util_SOURCES = \
 	test/DivideStringTest.hxx \
 	test/SplitStringTest.hxx \
 	test/UriUtilTest.hxx \
+	test/MimeTypeTest.hxx \
 	test/TestCircularBuffer.hxx \
 	test/test_util.cxx
 test_test_util_CPPFLAGS = $(AM_CPPFLAGS) $(CPPUNIT_CFLAGS) -DCPPUNIT_HAVE_RTTI=0
@@ -2132,7 +2224,7 @@ test_test_icy_parser_LDADD = \
 endif
 
 test_test_pcm_SOURCES = \
-	src/AudioFormat.cxx \
+	test/TestAudioFormat.cxx test/TestAudioFormat.hxx \
 	test/test_pcm_util.hxx \
 	test/test_pcm_dither.cxx \
 	test/test_pcm_pack.cxx \
@@ -2148,6 +2240,7 @@ test_test_pcm_CPPFLAGS = $(AM_CPPFLAGS) $(CPPUNIT_CFLAGS) -DCPPUNIT_HAVE_RTTI=0
 test_test_pcm_CXXFLAGS = $(AM_CXXFLAGS) -Wno-error=deprecated-declarations
 test_test_pcm_LDADD = \
 	$(PCM_LIBS) \
+	libbasic.a \
 	libutil.a \
 	$(CPPUNIT_LIBS)
 
@@ -2260,7 +2353,9 @@ developer_DATA = $(wildcard doc/developer/*.html)
 
 DOCBOOK_HTML = $(patsubst %.xml,%/index.html,$(DOCBOOK_FILES))
 
-$(DOCBOOK_HTML): %/index.html: %.xml
+DOCBOOK_INCLUDES = $(wildcard $(srcdir)/doc/include/*.xml)
+
+$(DOCBOOK_HTML): %/index.html: %.xml $(DOCBOOK_INCLUDES)
 	$(XMLTO) -o $(@D) --stringparam chunker.output.encoding=utf-8 html --stringparam use.id.as.filename=1 $<
 
 doc/api/html/index.html: doc/doxygen.conf
@@ -2282,7 +2377,7 @@ uninstall-local:
 	rm -f $(DESTDIR)$(docdir)/api/html/*.*
 
 upload: $(DOCBOOK_HTML) doc/api/html/index.html
-	rsync -vpruz --delete doc/ www.musicpd.org:/var/www/doc/ \
+	rsync -vpruz --delete doc/ www.musicpd.org:/var/www/mpd/doc/ \
 		--chmod=Dug+rwx,Do+rx,Fug+rw,Fo+r \
 		--include=protocol --include=protocol/** \
 		--include=user --include=user/** \
@@ -2301,9 +2396,10 @@ EXTRA_DIST = $(doc_DATA) autogen.sh \
 	test/test_archive_bzip2.sh  \
 	test/test_archive_iso9660.sh \
 	test/test_archive_zzip.sh \
-	$(wildcard scripts/*.sh) \
+	$(wildcard $(srcdir)/scripts/*.rb) \
 	$(man_MANS) $(DOCBOOK_FILES) doc/mpdconf.example doc/doxygen.conf \
-	systemd/mpd.socket \
+	$(wildcard $(srcdir)/doc/include/*.xml) \
+	systemd/system/mpd.socket \
 	android/AndroidManifest.xml \
 	android/build.py \
 	android/custom_rules.xml \

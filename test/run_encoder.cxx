@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -26,8 +26,9 @@
 #include "AudioParser.hxx"
 #include "config/Block.hxx"
 #include "fs/io/StdioOutputStream.hxx"
-#include "util/Error.hxx"
 #include "Log.hxx"
+
+#include <memory>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -64,27 +65,15 @@ int main(int argc, char **argv)
 	block.AddBlockParam("quality", "5.0", -1);
 
 	try {
-		Error error;
-		const auto encoder = encoder_init(*plugin, block, error);
-		if (encoder == NULL) {
-			LogError(error, "Failed to initialize encoder");
-			return EXIT_FAILURE;
-		}
+		std::unique_ptr<PreparedEncoder> p_encoder(encoder_init(*plugin, block));
 
 		/* open the encoder */
 
 		AudioFormat audio_format(44100, SampleFormat::S16, 2);
-		if (argc > 2) {
-			if (!audio_format_parse(audio_format, argv[2], false, error)) {
-				LogError(error, "Failed to parse audio format");
-				return EXIT_FAILURE;
-			}
-		}
+		if (argc > 2)
+			audio_format = ParseAudioFormat(argv[2], false);
 
-		if (!encoder->Open(audio_format, error)) {
-			LogError(error, "Failed to open encoder");
-			return EXIT_FAILURE;
-		}
+		std::unique_ptr<Encoder> encoder(p_encoder->Open(audio_format));
 
 		StdioOutputStream os(stdout);
 
@@ -94,23 +83,12 @@ int main(int argc, char **argv)
 
 		ssize_t nbytes;
 		while ((nbytes = read(0, buffer, sizeof(buffer))) > 0) {
-			if (!encoder_write(encoder, buffer, nbytes, error)) {
-				LogError(error, "encoder_write() failed");
-				return EXIT_FAILURE;
-			}
-
+			encoder->Write(buffer, nbytes);
 			EncoderToOutputStream(os, *encoder);
 		}
 
-		if (!encoder_end(encoder, error)) {
-			LogError(error, "encoder_flush() failed");
-			return EXIT_FAILURE;
-		}
-
+		encoder->End();
 		EncoderToOutputStream(os, *encoder);
-
-		encoder->Close();
-		encoder->Dispose();
 
 		return EXIT_SUCCESS;
 	} catch (const std::exception &e) {

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -29,8 +29,6 @@
 #include "system/FileDescriptor.hxx"
 #endif
 
-#include <assert.h>
-
 #ifdef WIN32
 #include <windows.h>
 #endif
@@ -48,7 +46,7 @@ class FileReader final : public Reader {
 #endif
 
 public:
-	FileReader(Path _path);
+	explicit FileReader(Path _path);
 
 #ifdef WIN32
 	FileReader(FileReader &&other)
@@ -90,6 +88,36 @@ public:
 
 	gcc_pure
 	FileInfo GetFileInfo() const;
+
+	gcc_pure
+	uint64_t GetSize() const {
+#ifdef WIN32
+		LARGE_INTEGER size;
+		return GetFileSizeEx(handle, &size)
+			? size.QuadPart
+			: 0;
+#else
+		return fd.GetSize();
+#endif
+	}
+
+	gcc_pure
+	uint64_t GetPosition() const {
+#ifdef WIN32
+		LARGE_INTEGER zero;
+		zero.QuadPart = 0;
+		LARGE_INTEGER position;
+		return SetFilePointerEx(handle, zero, &position, FILE_CURRENT)
+			? position.QuadPart
+			: 0;
+#else
+		return fd.Tell();
+#endif
+	}
+
+	void Rewind() {
+		Seek(0);
+	}
 
 	void Seek(off_t offset);
 	void Skip(off_t offset);

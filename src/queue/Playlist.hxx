@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -21,22 +21,23 @@
 #define MPD_PLAYLIST_HXX
 
 #include "queue/Queue.hxx"
-#include "PlaylistError.hxx"
 
 enum TagType : uint8_t;
 struct PlayerControl;
 class DetachedSong;
 class Database;
-class Error;
 class SongLoader;
 class SongTime;
 class SignedSongTime;
+class QueueListener;
 
 struct playlist {
 	/**
 	 * The song queue - it contains the "real" playlist.
 	 */
-	struct Queue queue;
+	Queue queue;
+
+	QueueListener &listener;
 
 	/**
 	 * This value is true if the player is currently playing (or
@@ -71,23 +72,27 @@ struct playlist {
 	unsigned error_count;
 
 	/**
-	 * The "current song pointer".  This is the song which is
-	 * played when we get the "play" command.  It is also the song
-	 * which is currently being played.
+	 * The "current song pointer" (the order number).  This is the
+	 * song which is played when we get the "play" command.  It is
+	 * also the song which is currently being played.
 	 */
 	int current;
 
 	/**
-	 * The "next" song to be played, when the current one
-	 * finishes.  The decoder thread may start decoding and
-	 * buffering it, while the "current" song is still playing.
+	 * The "next" song to be played (the order number), when the
+	 * current one finishes.  The decoder thread may start
+	 * decoding and buffering it, while the "current" song is
+	 * still playing.
 	 *
 	 * This variable is only valid if #playing is true.
 	 */
 	int queued;
 
-	playlist(unsigned max_length)
-		:queue(max_length), playing(false),
+	playlist(unsigned max_length,
+		 QueueListener &_listener)
+		:queue(max_length),
+		 listener(_listener),
+		 playing(false),
 		 bulk_edit(false),
 		 current(-1), queued(-1) {
 	}
@@ -130,7 +135,8 @@ struct playlist {
 protected:
 	/**
 	 * Called by all editing methods after a modification.
-	 * Updates the queue version and emits #IDLE_PLAYLIST.
+	 * Updates the queue version and invokes
+	 * QueueListener::OnQueueModified().
 	 */
 	void OnModified();
 
@@ -202,12 +208,13 @@ public:
 	unsigned AppendSong(PlayerControl &pc, DetachedSong &&song);
 
 	/**
-	 * @return the new song id or 0 on error
+	 * Throws #std::runtime_error on error.
+	 *
+	 * @return the new song id
 	 */
 	unsigned AppendURI(PlayerControl &pc,
 			   const SongLoader &loader,
-			   const char *uri_utf8,
-			   Error &error);
+			   const char *uri_utf8);
 
 protected:
 	void DeleteInternal(PlayerControl &pc,
@@ -230,7 +237,13 @@ public:
 	 */
 	void DeleteRange(PlayerControl &pc, unsigned start, unsigned end);
 
-	void DeleteSong(PlayerControl &pc, const char *uri);
+	/**
+	 * Mark the given song as "stale", i.e. as not being available
+	 * anymore.  This gets called when a song is removed from the
+	 * database.  The method attempts to remove all instances of
+	 * this song from the queue.
+	 */
+	void StaleSong(PlayerControl &pc, const char *uri);
 
 	void Shuffle(PlayerControl &pc, unsigned start, unsigned end);
 
@@ -262,41 +275,63 @@ public:
 
 	void Stop(PlayerControl &pc);
 
-	bool PlayPosition(PlayerControl &pc, int position, Error &error);
+	/**
+	 * Throws std::runtime_error or #Error on error.
+	 */
+	void PlayPosition(PlayerControl &pc, int position);
 
-	bool PlayOrder(PlayerControl &pc, int order, Error &error);
+	/**
+	 * Throws std::runtime_error or #Error on error.
+	 */
+	void PlayOrder(PlayerControl &pc, unsigned order);
 
-	bool PlayId(PlayerControl &pc, int id, Error &error);
+	/**
+	 * Throws std::runtime_error or #Error on error.
+	 */
+	void PlayId(PlayerControl &pc, int id);
 
-	bool PlayNext(PlayerControl &pc, Error &error);
+	/**
+	 * Throws std::runtime_error or #Error on error.
+	 */
+	void PlayNext(PlayerControl &pc);
 
-	bool PlayPrevious(PlayerControl &pc, Error &error);
+	/**
+	 * Throws std::runtime_error or #Error on error.
+	 */
+	void PlayPrevious(PlayerControl &pc);
 
-	bool SeekSongOrder(PlayerControl &pc,
+	/**
+	 * Throws std::runtime_error or #Error on error.
+	 */
+	void SeekSongOrder(PlayerControl &pc,
 			   unsigned song_order,
-			   SongTime seek_time,
-			   Error &error);
+			   SongTime seek_time);
 
-	bool SeekSongPosition(PlayerControl &pc,
+	/**
+	 * Throws std::runtime_error or #Error on error.
+	 */
+	void SeekSongPosition(PlayerControl &pc,
 			      unsigned sonag_position,
-			      SongTime seek_time,
-			      Error &error);
+			      SongTime seek_time);
 
-	bool SeekSongId(PlayerControl &pc,
-			unsigned song_id, SongTime seek_time,
-			Error &error);
+	/**
+	 * Throws std::runtime_error or #Error on error.
+	 */
+	void SeekSongId(PlayerControl &pc,
+			unsigned song_id, SongTime seek_time);
 
 	/**
 	 * Seek within the current song.  Fails if MPD is not currently
 	 * playing.
 	 *
+	 * Throws std::runtime_error or #Error on error.
+	 *
 	 * @param seek_time the time
 	 * @param relative if true, then the specified time is relative to the
 	 * current position
 	 */
-	bool SeekCurrent(PlayerControl &pc,
-			 SignedSongTime seek_time, bool relative,
-			 Error &error);
+	void SeekCurrent(PlayerControl &pc,
+			 SignedSongTime seek_time, bool relative);
 
 	bool GetRepeat() const {
 		return queue.repeat;

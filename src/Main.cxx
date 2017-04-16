@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -22,7 +22,6 @@
 #include "Instance.hxx"
 #include "CommandLine.hxx"
 #include "PlaylistFile.hxx"
-#include "PlaylistGlobal.hxx"
 #include "MusicChunk.hxx"
 #include "StateFile.hxx"
 #include "player/Thread.hxx"
@@ -33,27 +32,22 @@
 #include "client/ClientList.hxx"
 #include "command/AllCommands.hxx"
 #include "Partition.hxx"
-#include "tag/TagConfig.hxx"
-#include "ReplayGainConfig.hxx"
+#include "tag/Config.hxx"
+#include "ReplayGainGlobal.hxx"
 #include "Idle.hxx"
 #include "Log.hxx"
 #include "LogInit.hxx"
-#include "GlobalEvents.hxx"
 #include "input/Init.hxx"
 #include "event/Loop.hxx"
-#include "IOThread.hxx"
 #include "fs/AllocatedPath.hxx"
 #include "fs/Config.hxx"
 #include "playlist/PlaylistRegistry.hxx"
 #include "zeroconf/ZeroconfGlue.hxx"
 #include "decoder/DecoderList.hxx"
-#include "AudioConfig.hxx"
+#include "AudioParser.hxx"
 #include "pcm/PcmConvert.hxx"
 #include "unix/SignalHandlers.hxx"
 #include "system/FatalError.hxx"
-#include "util/UriUtil.hxx"
-#include "util/Error.hxx"
-#include "thread/Id.hxx"
 #include "thread/Slack.hxx"
 #include "lib/icu/Init.hxx"
 #include "config/ConfigGlobal.hxx"
@@ -61,7 +55,7 @@
 #include "config/ConfigDefaults.hxx"
 #include "config/ConfigOption.hxx"
 #include "config/ConfigError.hxx"
-#include "Stats.hxx"
+#include "util/RuntimeError.hxx"
 
 #ifdef ENABLE_DAEMON
 #include "unix/Daemon.hxx"
@@ -131,55 +125,50 @@ Context *context;
 
 Instance *instance;
 
-static StateFile *state_file;
+struct Config {
+	ReplayGainConfig replay_gain;
+};
+
+gcc_const
+static Config
+LoadConfig()
+{
+	return {LoadReplayGainConfig()};
+}
 
 #ifdef ENABLE_DAEMON
 
-static bool
-glue_daemonize_init(const struct options *options, Error &error)
+static void
+glue_daemonize_init(const struct options *options)
 {
-	auto pid_file = config_get_path(ConfigOption::PID_FILE, error);
-	if (pid_file.IsNull() && error.IsDefined())
-		return false;
-
 	daemonize_init(config_get_string(ConfigOption::USER, nullptr),
 		       config_get_string(ConfigOption::GROUP, nullptr),
-		       std::move(pid_file));
+		       config_get_path(ConfigOption::PID_FILE));
 
 	if (options->kill)
 		daemonize_kill();
-
-	return true;
 }
 
 #endif
 
-static bool
-glue_mapper_init(Error &error)
+static void
+glue_mapper_init()
 {
-	auto playlist_dir = config_get_path(ConfigOption::PLAYLIST_DIR, error);
-	if (playlist_dir.IsNull() && error.IsDefined())
-		return false;
-
-	mapper_init(std::move(playlist_dir));
-	return true;
+	mapper_init(config_get_path(ConfigOption::PLAYLIST_DIR));
 }
 
 #ifdef ENABLE_DATABASE
 
-static bool
-InitStorage(Error &error)
+static void
+InitStorage(EventLoop &event_loop)
 {
-	Storage *storage = CreateConfiguredStorage(io_thread_get(), error);
+	Storage *storage = CreateConfiguredStorage(event_loop);
 	if (storage == nullptr)
-		return !error.IsDefined();
-
-	assert(!error.IsDefined());
+		return;
 
 	CompositeStorage *composite = new CompositeStorage();
 	instance->storage = composite;
 	composite->Mount("", storage);
-	return true;
 }
 
 /**
@@ -190,20 +179,13 @@ InitStorage(Error &error)
 static bool
 glue_db_init_and_load(void)
 {
-	Error error;
 	instance->database =
-		CreateConfiguredDatabase(*instance->event_loop, *instance,
-					 error);
-	if (instance->database == nullptr) {
-		if (error.IsDefined())
-			FatalError(error);
-		else
-			return true;
-	}
+		CreateConfiguredDatabase(instance->event_loop, *instance);
+	if (instance->database == nullptr)
+		return true;
 
 	if (instance->database->GetPlugin().flags & DatabasePlugin::FLAG_REQUIRE_STORAGE) {
-		if (!InitStorage(error))
-			FatalError(error);
+		InitStorage(instance->io_thread.GetEventLoop());
 
 		if (instance->storage == nullptr) {
 			delete instance->database;
@@ -220,14 +202,17 @@ glue_db_init_and_load(void)
 				   "because the database does not need it");
 	}
 
-	if (!instance->database->Open(error))
-		FatalError(error);
+	try {
+		instance->database->Open();
+	} catch (...) {
+		std::throw_with_nested(std::runtime_error("Failed to open database plugin"));
+	}
 
 	if (!instance->database->IsPlugin(simple_db_plugin))
 		return true;
 
 	SimpleDatabase &db = *(SimpleDatabase *)instance->database;
-	instance->update = new UpdateService(*instance->event_loop, db,
+	instance->update = new UpdateService(instance->event_loop, db,
 					     static_cast<CompositeStorage &>(*instance->storage),
 					     *instance);
 
@@ -248,50 +233,41 @@ InitDatabaseAndStorage()
  * Configure and initialize the sticker subsystem.
  */
 static void
-glue_sticker_init(void)
+glue_sticker_init()
 {
 #ifdef ENABLE_SQLITE
-	Error error;
-	auto sticker_file = config_get_path(ConfigOption::STICKER_FILE, error);
-	if (sticker_file.IsNull()) {
-		if (error.IsDefined())
-			FatalError(error);
+	auto sticker_file = config_get_path(ConfigOption::STICKER_FILE);
+	if (sticker_file.IsNull())
 		return;
-	}
 
-	if (!sticker_global_init(std::move(sticker_file), error))
-		FatalError(error);
+	sticker_global_init(std::move(sticker_file));
 #endif
 }
 
-static bool
-glue_state_file_init(Error &error)
+static void
+glue_state_file_init()
 {
-	auto path_fs = config_get_path(ConfigOption::STATE_FILE, error);
+	auto path_fs = config_get_path(ConfigOption::STATE_FILE);
 	if (path_fs.IsNull()) {
-		if (error.IsDefined())
-			return false;
-
 #ifdef ANDROID
 		const auto cache_dir = GetUserCacheDir();
 		if (cache_dir.IsNull())
-			return true;
+			return;
 
 		path_fs = AllocatedPath::Build(cache_dir, "state");
 #else
-		return true;
+		return;
 #endif
 	}
 
-	const unsigned interval =
+	const auto interval =
 		config_get_unsigned(ConfigOption::STATE_FILE_INTERVAL,
 				    StateFile::DEFAULT_INTERVAL);
 
-	state_file = new StateFile(std::move(path_fs), interval,
-				   *instance->partition,
-				   *instance->event_loop);
-	state_file->Read();
-	return true;
+	instance->state_file = new StateFile(std::move(path_fs), interval,
+					     instance->partitions.front(),
+					     instance->event_loop);
+	instance->state_file->Read();
 }
 
 /**
@@ -317,9 +293,9 @@ static void winsock_init(void)
  * Initialize the decoder and player core, including the music pipe.
  */
 static void
-initialize_decoder_and_player(void)
+initialize_decoder_and_player(const ReplayGainConfig &replay_gain_config)
 {
-	const struct config_param *param;
+	const ConfigParam *param;
 
 	size_t buffer_size;
 	param = config_get_param(ConfigOption::AUDIO_BUFFER_SIZE);
@@ -364,41 +340,49 @@ initialize_decoder_and_player(void)
 		config_get_positive(ConfigOption::MAX_PLAYLIST_LENGTH,
 				    DEFAULT_PLAYLIST_MAX_LENGTH);
 
-	instance->partition = new Partition(*instance,
-					    max_length,
-					    buffered_chunks,
-					    buffered_before_play);
+	AudioFormat configured_audio_format = AudioFormat::Undefined();
+	param = config_get_param(ConfigOption::AUDIO_OUTPUT_FORMAT);
+	if (param != nullptr) {
+		try {
+			configured_audio_format = ParseAudioFormat(param->value.c_str(),
+								   true);
+		} catch (const std::runtime_error &) {
+			std::throw_with_nested(FormatRuntimeError("error parsing line %i",
+								  param->line));
+		}
+	}
+
+	instance->partitions.emplace_back(*instance,
+					  "default",
+					  max_length,
+					  buffered_chunks,
+					  buffered_before_play,
+					  configured_audio_format,
+					  replay_gain_config);
+	auto &partition = instance->partitions.back();
+
+	try {
+		param = config_get_param(ConfigOption::REPLAYGAIN);
+		if (param != nullptr)
+			partition.replay_gain_mode =
+				FromString(param->value.c_str());
+	} catch (...) {
+		std::throw_with_nested(FormatRuntimeError("Failed to parse line %i",
+							  param->line));
+	}
 }
 
-/**
- * Handler for GlobalEvents::IDLE.
- */
-static void
-idle_event_emitted(void)
+void
+Instance::OnIdle(unsigned flags)
 {
 	/* send "idle" notifications to all subscribed
 	   clients */
-	unsigned flags = idle_get();
-	if (flags != 0)
-		instance->client_list->IdleAdd(flags);
+	client_list->IdleAdd(flags);
 
 	if (flags & (IDLE_PLAYLIST|IDLE_PLAYER|IDLE_MIXER|IDLE_OUTPUT) &&
 	    state_file != nullptr)
 		state_file->CheckModified();
 }
-
-#ifdef WIN32
-
-/**
- * Handler for GlobalEvents::SHUTDOWN.
- */
-static void
-shutdown_event_emitted(void)
-{
-	instance->event_loop->Break();
-}
-
-#endif
 
 #ifndef ANDROID
 
@@ -413,15 +397,15 @@ int main(int argc, char *argv[])
 
 #endif
 
-static int mpd_main_after_fork(struct options);
+static int
+mpd_main_after_fork(const Config &config);
 
 #ifdef ANDROID
 static inline
 #endif
 int mpd_main(int argc, char *argv[])
-{
+try {
 	struct options options;
-	Error error;
 
 #ifdef ENABLE_DAEMON
 	daemonize_close_stdin();
@@ -435,62 +419,42 @@ int mpd_main(int argc, char *argv[])
 #endif
 #endif
 
-	if (!IcuInit(error)) {
-		LogError(error);
-		return EXIT_FAILURE;
-	}
+	IcuInit();
 
 	winsock_init();
-	io_thread_init();
 	config_global_init();
 
-	try {
 #ifdef ANDROID
-		(void)argc;
-		(void)argv;
+	(void)argc;
+	(void)argv;
 
-		const auto sdcard = Environment::getExternalStorageDirectory();
-		if (!sdcard.IsNull()) {
-			const auto config_path =
-				AllocatedPath::Build(sdcard, "mpd.conf");
-			if (FileExists(config_path))
-				ReadConfigFile(config_path);
-		}
-#else
-		if (!parse_cmdline(argc, argv, &options, error)) {
-			LogError(error);
-			return EXIT_FAILURE;
-		}
-#endif
-	} catch (const std::exception &e) {
-		LogError(e);
-		return EXIT_FAILURE;
+	const auto sdcard = Environment::getExternalStorageDirectory();
+	if (!sdcard.IsNull()) {
+		const auto config_path =
+			AllocatedPath::Build(sdcard, "mpd.conf");
+		if (FileExists(config_path))
+			ReadConfigFile(config_path);
 	}
+#else
+	ParseCommandLine(argc, argv, &options);
+#endif
+
+	const auto config = LoadConfig();
 
 #ifdef ENABLE_DAEMON
-	if (!glue_daemonize_init(&options, error)) {
-		LogError(error);
-		return EXIT_FAILURE;
-	}
+	glue_daemonize_init(&options);
 #endif
 
-	stats_global_init();
 	TagLoadConfig();
 
-	if (!log_init(options.verbose, options.log_stderr, error)) {
-		LogError(error);
-		return EXIT_FAILURE;
-	}
+	log_init(options.verbose, options.log_stderr);
 
 	instance = new Instance();
-	instance->event_loop = new EventLoop();
 
 #ifdef ENABLE_NEIGHBOR_PLUGINS
 	instance->neighbors = new NeighborGlue();
-	if (!instance->neighbors->Init(io_thread_get(), *instance, error)) {
-		LogError(error);
-		return EXIT_FAILURE;
-	}
+	instance->neighbors->Init(instance->io_thread.GetEventLoop(),
+				  *instance);
 
 	if (instance->neighbors->IsEmpty()) {
 		delete instance->neighbors;
@@ -502,13 +466,9 @@ int mpd_main(int argc, char *argv[])
 		config_get_positive(ConfigOption::MAX_CONN, 10);
 	instance->client_list = new ClientList(max_clients);
 
-	initialize_decoder_and_player();
+	initialize_decoder_and_player(config.replay_gain);
 
-	if (!listen_global_init(*instance->event_loop, *instance->partition,
-				error)) {
-		LogError(error);
-		return EXIT_FAILURE;
-	}
+	listen_global_init(instance->event_loop, instance->partitions.front());
 
 #ifdef ENABLE_DAEMON
 	daemonize_set_user();
@@ -523,46 +483,32 @@ int mpd_main(int argc, char *argv[])
 	   This must be run after forking; if dispatch is called before forking,
 	   the child process will have a broken internal dispatch state. */
 	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-		exit(mpd_main_after_fork(options));
+		exit(mpd_main_after_fork(config));
 	});
 	dispatch_main();
 	return EXIT_FAILURE; // unreachable, because dispatch_main never returns
 #else
-	return mpd_main_after_fork(options);
+	return mpd_main_after_fork(config);
 #endif
+} catch (const std::exception &e) {
+	LogError(e);
+	return EXIT_FAILURE;
 }
 
-static int mpd_main_after_fork(struct options options)
+static int
+mpd_main_after_fork(const Config &config)
 try {
-	Error error;
+	ConfigureFS();
 
-	GlobalEvents::Initialize(*instance->event_loop);
-	GlobalEvents::Register(GlobalEvents::IDLE, idle_event_emitted);
-#ifdef WIN32
-	GlobalEvents::Register(GlobalEvents::SHUTDOWN, shutdown_event_emitted);
-#endif
-
-	if (!ConfigureFS(error)) {
-		LogError(error);
-		return EXIT_FAILURE;
-	}
-
-	if (!glue_mapper_init(error)) {
-		LogError(error);
-		return EXIT_FAILURE;
-	}
+	glue_mapper_init();
 
 	initPermissions();
-	playlist_global_init();
 	spl_global_init();
 #ifdef ENABLE_ARCHIVE
 	archive_plugin_init_all();
 #endif
 
-	if (!pcm_convert_global_init(error)) {
-		LogError(error);
-		return EXIT_FAILURE;
-	}
+	pcm_convert_global_init();
 
 	decoder_plugin_init_all();
 
@@ -573,17 +519,16 @@ try {
 	glue_sticker_init();
 
 	command_init();
-	initAudioConfig();
-	instance->partition->outputs.Configure(*instance->event_loop,
-					       instance->partition->pc);
-	client_manager_init();
-	replay_gain_global_init();
 
-	if (!input_stream_global_init(error)) {
-		LogError(error);
-		return EXIT_FAILURE;
+	for (auto &partition : instance->partitions) {
+		partition.outputs.Configure(instance->io_thread.GetEventLoop(),
+					    config.replay_gain,
+					    partition.pc);
+		partition.UpdateEffectiveReplayGainMode();
 	}
 
+	client_manager_init();
+	input_stream_global_init(instance->io_thread.GetEventLoop());
 	playlist_list_global_init();
 
 #ifdef ENABLE_DAEMON
@@ -591,22 +536,22 @@ try {
 #endif
 
 #ifndef ANDROID
-	setup_log_output(options.log_stderr);
+	setup_log_output();
 
-	SignalHandlersInit(*instance->event_loop);
+	SignalHandlersInit(instance->event_loop);
 #endif
 
-	io_thread_start();
+	instance->io_thread.Start();
 
 #ifdef ENABLE_NEIGHBOR_PLUGINS
-	if (instance->neighbors != nullptr &&
-	    !instance->neighbors->Open(error))
-		FatalError(error);
+	if (instance->neighbors != nullptr)
+		instance->neighbors->Open();
 #endif
 
-	ZeroconfInit(*instance->event_loop);
+	ZeroconfInit(instance->event_loop);
 
-	StartPlayerThread(instance->partition->pc);
+	for (auto &partition : instance->partitions)
+		StartPlayerThread(partition.pc);
 
 #ifdef ENABLE_DATABASE
 	if (create_db) {
@@ -618,19 +563,14 @@ try {
 	}
 #endif
 
-	if (!glue_state_file_init(error)) {
-		LogError(error);
-		return EXIT_FAILURE;
-	}
-
-	instance->partition->outputs.SetReplayGainMode(replay_gain_get_real_mode(instance->partition->playlist.queue.random));
+	glue_state_file_init();
 
 #ifdef ENABLE_DATABASE
 	if (config_get_bool(ConfigOption::AUTO_UPDATE, false)) {
 #ifdef ENABLE_INOTIFY
 		if (instance->storage != nullptr &&
 		    instance->update != nullptr)
-			mpd_inotify_init(*instance->event_loop,
+			mpd_inotify_init(instance->event_loop,
 					 *instance->storage,
 					 *instance->update,
 					 config_get_unsigned(ConfigOption::AUTO_UPDATE_DEPTH,
@@ -646,7 +586,8 @@ try {
 
 	/* enable all audio outputs (if not already done by
 	   playlist_state_restore() */
-	instance->partition->pc.LockUpdateAudio();
+	for (auto &partition : instance->partitions)
+		partition.pc.LockUpdateAudio();
 
 #ifdef WIN32
 	win32_app_started();
@@ -661,7 +602,7 @@ try {
 #endif
 
 	/* run the main loop */
-	instance->event_loop->Run();
+	instance->event_loop.Run();
 
 #ifdef WIN32
 	win32_app_stopping();
@@ -676,12 +617,14 @@ try {
 		instance->update->CancelAllAsync();
 #endif
 
-	if (state_file != nullptr) {
-		state_file->Write();
-		delete state_file;
+	if (instance->state_file != nullptr) {
+		instance->state_file->Write();
+		delete instance->state_file;
 	}
 
-	instance->partition->pc.Kill();
+	for (auto &partition : instance->partitions)
+		partition.pc.Kill();
+
 	ZeroconfDeinit();
 	listen_global_finish();
 	delete instance->client_list;
@@ -708,8 +651,6 @@ try {
 	sticker_global_finish();
 #endif
 
-	GlobalEvents::Deinitialize();
-
 	playlist_list_global_finish();
 	input_stream_global_finish();
 
@@ -719,18 +660,17 @@ try {
 
 	DeinitFS();
 
-	delete instance->partition;
+	instance->partitions.clear();
 	command_finish();
 	decoder_plugin_deinit_all();
 #ifdef ENABLE_ARCHIVE
 	archive_plugin_deinit_all();
 #endif
 	config_global_finish();
-	io_thread_deinit();
+	instance->io_thread.Stop();
 #ifndef ANDROID
 	SignalHandlersFinish();
 #endif
-	delete instance->event_loop;
 	delete instance;
 	instance = nullptr;
 
@@ -774,7 +714,7 @@ JNIEXPORT void JNICALL
 Java_org_musicpd_Bridge_shutdown(JNIEnv *, jclass)
 {
 	if (instance != nullptr)
-		instance->event_loop->Break();
+		instance->Shutdown();
 }
 
 #endif

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -23,7 +23,6 @@
 #include "client/Client.hxx"
 #include "db/DatabaseSong.hxx"
 #include "storage/StorageInterface.hxx"
-#include "util/Error.hxx"
 #include "DetachedSong.hxx"
 #include "PlaylistError.hxx"
 
@@ -32,27 +31,26 @@
 #ifdef ENABLE_DATABASE
 
 SongLoader::SongLoader(const Client &_client)
-	:client(&_client), db(_client.GetDatabase(IgnoreError())),
+	:client(&_client), db(_client.GetDatabase()),
 	 storage(_client.GetStorage()) {}
 
 #endif
 
-DetachedSong *
-SongLoader::LoadFromDatabase(const char *uri, Error &error) const
+DetachedSong
+SongLoader::LoadFromDatabase(const char *uri) const
 {
 #ifdef ENABLE_DATABASE
 	if (db != nullptr)
-		return DatabaseDetachSong(*db, *storage, uri, error);
+		return DatabaseDetachSong(*db, storage, uri);
 #else
 	(void)uri;
-	(void)error;
 #endif
 
 	throw PlaylistError(PlaylistResult::NO_SUCH_SONG, "No database");
 }
 
-DetachedSong *
-SongLoader::LoadFile(const char *path_utf8, Path path_fs, Error &error) const
+DetachedSong
+SongLoader::LoadFile(const char *path_utf8, Path path_fs) const
 {
 #ifdef ENABLE_DATABASE
 	if (storage != nullptr) {
@@ -60,55 +58,46 @@ SongLoader::LoadFile(const char *path_utf8, Path path_fs, Error &error) const
 		if (suffix != nullptr)
 			/* this path was relative to the music
 			   directory - obtain it from the database */
-			return LoadFromDatabase(suffix, error);
+			return LoadFromDatabase(suffix);
 	}
-#else
-	(void)error;
 #endif
 
 	DetachedSong song(path_utf8);
 	if (!song.LoadFile(path_fs))
 		throw PlaylistError::NoSuchSong();
 
-	return new DetachedSong(std::move(song));
+	return song;
 }
 
-DetachedSong *
-SongLoader::LoadSong(const LocatedUri &located_uri, Error &error) const
+DetachedSong
+SongLoader::LoadSong(const LocatedUri &located_uri) const
 {
 	switch (located_uri.type) {
-	case LocatedUri::Type::UNKNOWN:
-		gcc_unreachable();
-
 	case LocatedUri::Type::ABSOLUTE:
-		return new DetachedSong(located_uri.canonical_uri);
+		return DetachedSong(located_uri.canonical_uri);
 
 	case LocatedUri::Type::RELATIVE:
-		return LoadFromDatabase(located_uri.canonical_uri, error);
+		return LoadFromDatabase(located_uri.canonical_uri);
 
 	case LocatedUri::Type::PATH:
-		return LoadFile(located_uri.canonical_uri, located_uri.path,
-				error);
+		return LoadFile(located_uri.canonical_uri, located_uri.path);
 	}
 
 	gcc_unreachable();
 }
 
-DetachedSong *
-SongLoader::LoadSong(const char *uri_utf8, Error &error) const
+DetachedSong
+SongLoader::LoadSong(const char *uri_utf8) const
 {
 #if !CLANG_CHECK_VERSION(3,6)
 	/* disabled on clang due to -Wtautological-pointer-compare */
 	assert(uri_utf8 != nullptr);
 #endif
 
-	const auto located_uri = LocateUri(uri_utf8, client,
+	const auto located_uri = LocateUri(uri_utf8, client
 #ifdef ENABLE_DATABASE
-					   storage,
+					   , storage
 #endif
-					   error);
-	if (located_uri.IsUnknown())
-		return nullptr;
-
-	return LoadSong(located_uri, error);
+					   );
+	return LoadSong(located_uri);
 }

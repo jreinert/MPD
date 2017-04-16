@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -20,12 +20,6 @@
 #ifndef MPD_INPUT_PLUGIN_HXX
 #define MPD_INPUT_PLUGIN_HXX
 
-#include "thread/Mutex.hxx"
-#include "thread/Cond.hxx"
-
-#include <stddef.h>
-#include <stdint.h>
-
 #ifdef WIN32
 #include <windows.h>
 /* damn you, windows.h! */
@@ -35,41 +29,23 @@
 #endif
 
 struct ConfigBlock;
+class Mutex;
+class Cond;
+class EventLoop;
 class InputStream;
-class Error;
-struct Tag;
 
 struct InputPlugin {
-	enum class InitResult {
-		/**
-		 * A fatal error has occurred (e.g. misconfiguration).
-		 * The #Error has been set.
-		 */
-		ERROR,
-
-		/**
-		 * The plugin was initialized successfully and is
-		 * ready to be used.
-		 */
-		SUCCESS,
-
-		/**
-		 * The plugin is not available and shall be disabled.
-		 * The #Error may be set describing the situation (to
-		 * be logged).
-		 */
-		UNAVAILABLE,
-	};
-
 	const char *name;
 
 	/**
 	 * Global initialization.  This method is called when MPD starts.
 	 *
-	 * @return true on success, false if the plugin should be
-	 * disabled
+	 * Throws #PluginUnavailable if the plugin is not available
+	 * and shall be disabled.
+	 *
+	 * Throws std::runtime_error on (fatal) error.
 	 */
-	InitResult (*init)(const ConfigBlock &block, Error &error);
+	void (*init)(EventLoop &event_loop, const ConfigBlock &block);
 
 	/**
 	 * Global deinitialization.  Called once before MPD shuts
@@ -77,9 +53,11 @@ struct InputPlugin {
 	 */
 	void (*finish)();
 
+	/**
+	 * Throws std::runtime_error on error.
+	 */
 	InputStream *(*open)(const char *uri,
-			     Mutex &mutex, Cond &cond,
-			     Error &error);
+			     Mutex &mutex, Cond &cond);
 };
 
 #endif

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -20,6 +20,7 @@
 #include "config.h" /* must be first for large file support */
 #include "Walk.hxx"
 #include "UpdateDomain.hxx"
+#include "DetachedSong.hxx"
 #include "db/DatabaseLock.hxx"
 #include "db/plugins/simple/Directory.hxx"
 #include "db/plugins/simple/Song.hxx"
@@ -28,11 +29,8 @@
 #include "decoder/DecoderList.hxx"
 #include "fs/AllocatedPath.hxx"
 #include "storage/FileInfo.hxx"
-#include "tag/TagHandler.hxx"
-#include "tag/TagBuilder.hxx"
 #include "Log.hxx"
-
-#include <sys/stat.h>
+#include "util/AllocatedString.hxx"
 
 Directory *
 UpdateWalk::MakeDirectoryIfModified(Directory &parent, const char *name,
@@ -45,7 +43,7 @@ UpdateWalk::MakeDirectoryIfModified(Directory &parent, const char *name,
 		if (directory->IsMount())
 			return nullptr;
 
-		if (directory->mtime == info.mtime && !walk_discard) {
+		if (directory->mtime == std::chrono::system_clock::to_time_t(info.mtime) && !walk_discard) {
 			/* not modified */
 			return nullptr;
 		}
@@ -55,7 +53,7 @@ UpdateWalk::MakeDirectoryIfModified(Directory &parent, const char *name,
 	}
 
 	directory = parent.MakeChild(name);
-	directory->mtime = info.mtime;
+	directory->mtime = std::chrono::system_clock::to_time_t(info.mtime);
 	return directory;
 }
 
@@ -97,40 +95,35 @@ UpdateWalk::UpdateContainerFile(Directory &directory,
 		return false;
 	}
 
-	char *vtrack;
-	unsigned int tnum = 0;
-	TagBuilder tag_builder;
-	while ((vtrack = plugin.container_scan(pathname, ++tnum)) != nullptr) {
-		Song *song = Song::NewFile(vtrack, *contdir);
-
-		// shouldn't be necessary but it's there..
-		song->mtime = info.mtime;
-
-		const auto vtrack_fs = AllocatedPath::FromUTF8(vtrack);
-		// TODO: check vtrack_fs.IsNull()
-
-		const auto child_path_fs = AllocatedPath::Build(pathname,
-								vtrack_fs);
-		plugin.ScanFile(child_path_fs,
-				add_tag_handler, &tag_builder);
-
-		tag_builder.Commit(song->tag);
-
-		{
-			const ScopeDatabaseLock protect;
-			contdir->AddSong(song);
+	try {
+		auto v = plugin.container_scan(pathname);
+		if (v.empty()) {
+			editor.LockDeleteDirectory(contdir);
+			return false;
 		}
 
-		modified = true;
+		for (auto &vtrack : v) {
+			Song *song = Song::NewFrom(std::move(vtrack),
+						   *contdir);
 
-		FormatDefault(update_domain, "added %s/%s",
-			      directory.GetPath(), vtrack);
-		delete[] vtrack;
+			// shouldn't be necessary but it's there..
+			song->mtime = std::chrono::system_clock::to_time_t(info.mtime);
+
+			FormatDefault(update_domain, "added %s/%s",
+				      contdir->GetPath(), song->uri);
+
+			{
+				const ScopeDatabaseLock protect;
+				contdir->AddSong(song);
+			}
+
+			modified = true;
+		}
+	} catch (const std::runtime_error &e) {
+		editor.LockDeleteDirectory(contdir);
+		LogError(e);
+		return false;
 	}
 
-	if (tnum == 1) {
-		editor.LockDeleteDirectory(contdir);
-		return false;
-	} else
-		return true;
+	return true;
 }

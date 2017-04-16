@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -20,13 +20,11 @@
 #ifndef MPD_MEMORY_DATABASE_PLUGIN_HXX
 #define MPD_MEMORY_DATABASE_PLUGIN_HXX
 
-class Error;
 class Database;
 struct DatabaseSelection;
 struct DatabaseStats;
 
-bool
-GetStats(const Database &db, const DatabaseSelection &selection,
-	 DatabaseStats &stats, Error &error);
+DatabaseStats
+GetStats(const Database &db, const DatabaseSelection &selection);
 
 #endif

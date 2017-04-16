@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2010-2015 Max Kellermann <max@duempel.org>
+ * Copyright (C) 2010-2015 Max Kellermann <max.kellermann@gmail.com>
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -101,7 +101,8 @@ gcc_nonnull_all
 static inline wchar_t *
 UnsafeCopyStringP(wchar_t *dest, const wchar_t *src)
 {
-#if defined(WIN32) || defined(__BIONIC__)
+#if defined(WIN32) || defined(__BIONIC__) || defined(__OpenBSD__) || \
+	defined(__NetBSD__)
   /* emulate wcpcpy() */
   UnsafeCopyString(dest, src);
   return dest + StringLength(dest);

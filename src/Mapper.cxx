@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -24,8 +24,6 @@
 #include "config.h"
 #include "Mapper.hxx"
 #include "fs/AllocatedPath.hxx"
-#include "fs/Traits.hxx"
-#include "fs/Charset.hxx"
 #include "fs/CheckFile.hxx"
 #include "util/StringCompare.hxx"
 

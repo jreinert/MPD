@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -35,20 +35,19 @@
 #include "fs/AllocatedPath.hxx"
 #include "fs/Traits.hxx"
 #include "fs/FileSystem.hxx"
-#include "fs/Charset.hxx"
 #include "storage/FileInfo.hxx"
 #include "util/Alloc.hxx"
 #include "util/StringCompare.hxx"
 #include "util/UriUtil.hxx"
-#include "util/Error.hxx"
 #include "Log.hxx"
 
+#include <stdexcept>
+#include <memory>
+
 #include <assert.h>
-#include <sys/stat.h>
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
-#include <memory>
 
 UpdateWalk::UpdateWalk(EventLoop &_loop, DatabaseListener &_listener,
 		       Storage &_storage)
@@ -193,7 +192,7 @@ UpdateWalk::UpdatePlaylistFile(Directory &directory,
 	if (!playlist_suffix_supported(suffix))
 		return false;
 
-	PlaylistInfo pi(name, info.mtime);
+	PlaylistInfo pi(name, std::chrono::system_clock::to_time_t(info.mtime));
 
 	const ScopeDatabaseLock protect;
 	if (directory.playlists.UpdateOrInsert(std::move(pi)))
@@ -279,12 +278,10 @@ UpdateWalk::SkipSymlink(const Directory *directory,
 		return false;
 	}
 
-	const char *target_str = target.c_str();
-
-	if (PathTraitsFS::IsAbsolute(target_str)) {
+	if (target.IsAbsolute()) {
 		/* if the symlink points to an absolute path, see if
 		   that path is inside the music directory */
-		const auto target_utf8 = PathToUTF8(target_str);
+		const auto target_utf8 = target.ToUTF8();
 		if (target_utf8.empty())
 			return true;
 
@@ -295,7 +292,7 @@ UpdateWalk::SkipSymlink(const Directory *directory,
 			: !follow_outside_symlinks;
 	}
 
-	const char *p = target_str;
+	const char *p = target.c_str();
 	while (*p == '.') {
 		if (p[1] == '.' && PathTraitsFS::IsSeparator(p[2])) {
 			/* "../" moves to parent directory */
@@ -337,10 +334,12 @@ UpdateWalk::UpdateDirectory(Directory &directory,
 
 	directory_set_stat(directory, info);
 
-	Error error;
-	const std::unique_ptr<StorageDirectoryReader> reader(storage.OpenDirectory(directory.GetPath(), error));
-	if (reader.get() == nullptr) {
-		LogError(error);
+	std::unique_ptr<StorageDirectoryReader> reader;
+
+	try {
+		reader.reset(storage.OpenDirectory(directory.GetPath()));
+	} catch (const std::runtime_error &e) {
+		LogError(e);
 		return false;
 	}
 
@@ -383,7 +382,7 @@ UpdateWalk::UpdateDirectory(Directory &directory,
 		UpdateDirectoryChild(directory, child_exclude_list, name_utf8, info2);
 	}
 
-	directory.mtime = info.mtime;
+	directory.mtime = std::chrono::system_clock::to_time_t(info.mtime);
 
 	return true;
 }

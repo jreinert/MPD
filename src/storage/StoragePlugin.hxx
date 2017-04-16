@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -22,15 +22,16 @@
 
 #include "check.h"
 
-class Error;
 class Storage;
 class EventLoop;
 
 struct StoragePlugin {
 	const char *name;
 
-	Storage *(*create_uri)(EventLoop &event_loop, const char *uri,
-			       Error &error);
+	/**
+	 * Throws #std::runtime_error on error.
+	 */
+	Storage *(*create_uri)(EventLoop &event_loop, const char *uri);
 };
 
 #endif

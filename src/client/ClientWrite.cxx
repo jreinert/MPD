@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -20,8 +20,10 @@
 #include "config.h"
 #include "Client.hxx"
 #include "util/FormatString.hxx"
+#include "util/AllocatedString.hxx"
 
 #include <string.h>
+#include <stdarg.h>
 
 bool
 Client::Write(const void *data, size_t length)
@@ -30,18 +32,16 @@ Client::Write(const void *data, size_t length)
 	return !IsExpired() && FullyBufferedSocket::Write(data, length);
 }
 
-void
-client_puts(Client &client, const char *s)
+bool
+Client::Write(const char *data)
 {
-	client.Write(s, strlen(s));
+	return Write(data, strlen(data));
 }
 
-void
+static void
 client_vprintf(Client &client, const char *fmt, va_list args)
 {
-	char *p = FormatNewV(fmt, args);
-	client.Write(p, strlen(p));
-	delete[] p;
+	client.Write(FormatStringV(fmt, args).c_str());
 }
 
 void

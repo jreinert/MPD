@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -25,22 +25,21 @@
 #ifndef MPD_AUDIO_PARSER_HXX
 #define MPD_AUDIO_PARSER_HXX
 
+#include "Compiler.h"
+
 struct AudioFormat;
-class Error;
 
 /**
  * Parses a string in the form "SAMPLE_RATE:BITS:CHANNELS" into an
  * #AudioFormat.
  *
- * @param dest the destination #audio_format struct
+ * Throws #std::runtime_error on error.
+ *
  * @param src the input string
  * @param mask if true, then "*" is allowed for any number of items
- * @param error location to store the error occurring, or NULL to
- * ignore errors
- * @return true on success
  */
-bool
-audio_format_parse(AudioFormat &dest, const char *src,
-		   bool mask, Error &error);
+gcc_pure
+AudioFormat
+ParseAudioFormat(const char *src, bool mask);
 
 #endif

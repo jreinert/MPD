@@ -19,15 +19,15 @@ libvorbis = AutotoolsProject(
 )
 
 opus = AutotoolsProject(
-    'http://downloads.xiph.org/releases/opus/opus-1.1.1.tar.gz',
-    'cfb354d4c65217ca32a762f8ab15f2ac',
+    'http://downloads.xiph.org/releases/opus/opus-1.1.4.tar.gz',
+    '9122b6b380081dd2665189f97bfd777f04f92dc3ab6698eea1dbb27ad59d8692',
     'lib/libopus.a',
     ['--disable-shared', '--enable-static'],
 )
 
 flac = AutotoolsProject(
-    'http://downloads.xiph.org/releases/flac/flac-1.3.1.tar.xz',
-    'b9922c9a0378c88d3e901b234f852698',
+    'http://downloads.xiph.org/releases/flac/flac-1.3.2.tar.xz',
+    '91cfc3ed61dc40f47f050a109b08610667d73477af6ef36dcad31c31a4a8d53f',
     'lib/libFLAC.a',
     [
         '--disable-shared', '--enable-static',
@@ -58,8 +58,8 @@ libmad = AutotoolsProject(
 )
 
 ffmpeg = FfmpegProject(
-    'http://ffmpeg.org/releases/ffmpeg-2.8.3.tar.xz',
-    '2af2723dd53364ac0635efd20cf6e34e',
+    'http://ffmpeg.org/releases/ffmpeg-3.2.4.tar.xz',
+    '6e38ff14f080c98b58cf5967573501b8cb586e3a173b591f3807d8f0660daf7a',
     'lib/libavcodec.a',
     [
         '--disable-shared', '--enable-static',
@@ -82,8 +82,8 @@ ffmpeg = FfmpegProject(
 )
 
 curl = AutotoolsProject(
-    'http://curl.haxx.se/download/curl-7.46.0.tar.lzma',
-    'f845c513830d38c1b7ac39a98c1c2b11',
+    'http://curl.haxx.se/download/curl-7.52.1.tar.lzma',
+    '44286d4b825936e2430fc44ad730ce899afb736a5d328cbb8b5d42462f3f2365',
     'lib/libcurl.a',
     [
         '--disable-shared', '--enable-static',
@@ -103,7 +103,7 @@ curl = AutotoolsProject(
 )
 
 boost = BoostProject(
-    'http://netcologne.dl.sourceforge.net/project/boost/boost/1.59.0/boost_1_59_0.tar.bz2',
-    '6aa9a5c6a4ca1016edd0ed1178e3cb87',
+    'http://downloads.sourceforge.net/project/boost/boost/1.63.0/boost_1_63_0.tar.bz2',
+    'beae2529f759f6b3bf3f4969a19c2e9d6f0c503edcb2de4a61d1428519fcb3b0',
     'include/boost/version.hpp',
 )

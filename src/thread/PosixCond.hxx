@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2009-2015 Max Kellermann <max@duempel.org>
+ * Copyright (C) 2009-2015 Max Kellermann <max.kellermann@gmail.com>
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -31,6 +31,8 @@
 #define THREAD_POSIX_COND_HXX
 
 #include "PosixMutex.hxx"
+
+#include <chrono>
 
 #include <sys/time.h>
 
@@ -72,6 +74,7 @@ public:
 		pthread_cond_wait(&cond, &mutex.mutex);
 	}
 
+private:
 	bool timed_wait(PosixMutex &mutex, unsigned timeout_ms) {
 		struct timeval now;
 		gettimeofday(&now, nullptr);
@@ -79,8 +82,25 @@ public:
 		struct timespec ts;
 		ts.tv_sec = now.tv_sec + timeout_ms / 1000;
 		ts.tv_nsec = (now.tv_usec + (timeout_ms % 1000) * 1000) * 1000;
+		// Keep tv_nsec < 1E9 to prevent return of EINVAL
+		if (ts.tv_nsec >= 1000000000) {
+			ts.tv_nsec -= 1000000000;
+			ts.tv_sec++;
+		}
 
 		return pthread_cond_timedwait(&cond, &mutex.mutex, &ts) == 0;
+	}
+
+public:
+	bool timed_wait(PosixMutex &mutex,
+			std::chrono::steady_clock::duration timeout) {
+		auto timeout_ms = std::chrono::duration_cast<std::chrono::milliseconds>(timeout).count();
+		if (timeout_ms < 0)
+			timeout_ms = 0;
+		else if (timeout_ms > std::numeric_limits<unsigned>::max())
+			timeout_ms = std::numeric_limits<unsigned>::max();
+
+		return timed_wait(mutex, timeout_ms);
 	}
 };
 

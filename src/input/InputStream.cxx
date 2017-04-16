@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -22,16 +22,17 @@
 #include "thread/Cond.hxx"
 #include "util/StringCompare.hxx"
 
+#include <stdexcept>
+
 #include <assert.h>
 
 InputStream::~InputStream()
 {
 }
 
-bool
-InputStream::Check(gcc_unused Error &error)
+void
+InputStream::Check()
 {
-	return true;
 }
 
 void
@@ -63,7 +64,7 @@ InputStream::WaitReady()
 void
 InputStream::LockWaitReady()
 {
-	const ScopeLock protect(mutex);
+	const std::lock_guard<Mutex> protect(mutex);
 	WaitReady();
 }
 
@@ -86,25 +87,24 @@ InputStream::CheapSeeking() const
 	return IsSeekable() && !ExpensiveSeeking(uri.c_str());
 }
 
-bool
-InputStream::Seek(gcc_unused offset_type new_offset,
-		  gcc_unused Error &error)
+void
+InputStream::Seek(gcc_unused offset_type new_offset)
 {
-	return false;
+	throw std::runtime_error("Seeking is not implemented");
 }
 
-bool
-InputStream::LockSeek(offset_type _offset, Error &error)
+void
+InputStream::LockSeek(offset_type _offset)
 {
-	const ScopeLock protect(mutex);
-	return Seek(_offset, error);
+	const std::lock_guard<Mutex> protect(mutex);
+	Seek(_offset);
 }
 
-bool
-InputStream::LockSkip(offset_type _offset, Error &error)
+void
+InputStream::LockSkip(offset_type _offset)
 {
-	const ScopeLock protect(mutex);
-	return Skip(_offset, error);
+	const std::lock_guard<Mutex> protect(mutex);
+	Skip(_offset);
 }
 
 Tag *
@@ -116,7 +116,7 @@ InputStream::ReadTag()
 Tag *
 InputStream::LockReadTag()
 {
-	const ScopeLock protect(mutex);
+	const std::lock_guard<Mutex> protect(mutex);
 	return ReadTag();
 }
 
@@ -127,7 +127,7 @@ InputStream::IsAvailable()
 }
 
 size_t
-InputStream::LockRead(void *ptr, size_t _size, Error &error)
+InputStream::LockRead(void *ptr, size_t _size)
 {
 #if !CLANG_CHECK_VERSION(3,6)
 	/* disabled on clang due to -Wtautological-pointer-compare */
@@ -135,29 +135,28 @@ InputStream::LockRead(void *ptr, size_t _size, Error &error)
 #endif
 	assert(_size > 0);
 
-	const ScopeLock protect(mutex);
-	return Read(ptr, _size, error);
+	const std::lock_guard<Mutex> protect(mutex);
+	return Read(ptr, _size);
 }
 
-bool
-InputStream::ReadFull(void *_ptr, size_t _size, Error &error)
+void
+InputStream::ReadFull(void *_ptr, size_t _size)
 {
 	uint8_t *ptr = (uint8_t *)_ptr;
 
 	size_t nbytes_total = 0;
 	while (_size > 0) {
-		size_t nbytes = Read(ptr + nbytes_total, _size, error);
+		size_t nbytes = Read(ptr + nbytes_total, _size);
 		if (nbytes == 0)
-			return false;
+			throw std::runtime_error("Unexpected end of file");
 
 		nbytes_total += nbytes;
 		_size -= nbytes;
 	}
-	return true;
 }
 
-bool
-InputStream::LockReadFull(void *ptr, size_t _size, Error &error)
+void
+InputStream::LockReadFull(void *ptr, size_t _size)
 {
 #if !CLANG_CHECK_VERSION(3,6)
 	/* disabled on clang due to -Wtautological-pointer-compare */
@@ -165,13 +164,13 @@ InputStream::LockReadFull(void *ptr, size_t _size, Error &error)
 #endif
 	assert(_size > 0);
 
-	const ScopeLock protect(mutex);
-	return ReadFull(ptr, _size, error);
+	const std::lock_guard<Mutex> protect(mutex);
+	ReadFull(ptr, _size);
 }
 
 bool
 InputStream::LockIsEOF()
 {
-	const ScopeLock protect(mutex);
+	const std::lock_guard<Mutex> protect(mutex);
 	return IsEOF();
 }

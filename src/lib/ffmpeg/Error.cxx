@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -19,25 +19,24 @@
 
 #include "config.h"
 #include "Error.hxx"
-#include "Domain.hxx"
-#include "util/Error.hxx"
+#include "util/RuntimeError.hxx"
 
 extern "C" {
 #include <libavutil/error.h>
 }
 
-void
-SetFfmpegError(Error &error, int errnum)
+std::runtime_error
+MakeFfmpegError(int errnum)
 {
 	char msg[256];
 	av_strerror(errnum, msg, sizeof(msg));
-	error.Set(ffmpeg_domain, errnum, msg);
+	return std::runtime_error(msg);
 }
 
-void
-SetFfmpegError(Error &error, int errnum, const char *prefix)
+std::runtime_error
+MakeFfmpegError(int errnum, const char *prefix)
 {
 	char msg[256];
 	av_strerror(errnum, msg, sizeof(msg));
-	error.Format(ffmpeg_domain, errnum, "%s: %s", prefix, msg);
+	return FormatRuntimeError("%s: %s", prefix, msg);
 }

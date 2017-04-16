@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -21,25 +21,23 @@
 #define MPD_TAG_SETTINGS_HXX
 
 #include "Mask.hxx"
-#include "TagType.h"
+#include "Type.h"
 #include "Compiler.h"
 
-#include <stdint.h>
-
-extern tag_mask_t global_tag_mask;
-
-gcc_const
-static inline bool
-IsTagEnabled(unsigned tag)
-{
-	return global_tag_mask & (1u << tag);
-}
+extern TagMask global_tag_mask;
 
 gcc_const
 static inline bool
 IsTagEnabled(TagType tag)
 {
-	return IsTagEnabled(unsigned(tag));
+	return global_tag_mask.Test(tag);
+}
+
+gcc_const
+static inline bool
+IsTagEnabled(unsigned tag)
+{
+	return IsTagEnabled(TagType(tag));
 }
 
 #endif

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -21,20 +21,23 @@
 #include "AsyncInputStream.hxx"
 #include "Domain.hxx"
 #include "tag/Tag.hxx"
-#include "event/Call.hxx"
 #include "thread/Cond.hxx"
-#include "IOThread.hxx"
-#include "util/HugeAllocator.hxx"
+#include "event/Loop.hxx"
+
+#include <stdexcept>
 
 #include <assert.h>
 #include <string.h>
 
-AsyncInputStream::AsyncInputStream(const char *_url,
+AsyncInputStream::AsyncInputStream(EventLoop &event_loop, const char *_url,
 				   Mutex &_mutex, Cond &_cond,
-				   void *_buffer, size_t _buffer_size,
+				   size_t _buffer_size,
 				   size_t _resume_at)
-	:InputStream(_url, _mutex, _cond), DeferredMonitor(io_thread_get()),
-	 buffer((uint8_t *)_buffer, _buffer_size),
+	:InputStream(_url, _mutex, _cond),
+	 deferred_resume(event_loop, BIND_THIS_METHOD(DeferredResume)),
+	 deferred_seek(event_loop, BIND_THIS_METHOD(DeferredSeek)),
+	 allocation(_buffer_size),
+	 buffer((uint8_t *)allocation.get(), _buffer_size),
 	 resume_at(_resume_at),
 	 open(true),
 	 paused(false),
@@ -46,7 +49,6 @@ AsyncInputStream::~AsyncInputStream()
 	delete tag;
 
 	buffer.Clear();
-	HugeFree(buffer.Write().data, buffer.GetCapacity());
 }
 
 void
@@ -59,42 +61,31 @@ AsyncInputStream::SetTag(Tag *_tag)
 void
 AsyncInputStream::Pause()
 {
-	assert(io_thread_inside());
+	assert(GetEventLoop().IsInside());
 
 	paused = true;
-}
-
-void
-AsyncInputStream::PostponeError(Error &&error)
-{
-	assert(io_thread_inside());
-
-	seek_state = SeekState::NONE;
-	postponed_error = std::move(error);
-	cond.broadcast();
 }
 
 inline void
 AsyncInputStream::Resume()
 {
-	assert(io_thread_inside());
+	assert(GetEventLoop().IsInside());
 
 	if (paused) {
 		paused = false;
+
 		DoResume();
 	}
 }
 
-bool
-AsyncInputStream::Check(Error &error)
+void
+AsyncInputStream::Check()
 {
-	bool success = !postponed_error.IsDefined();
-	if (!success) {
-		error = std::move(postponed_error);
-		postponed_error.Clear();
+	if (postponed_exception) {
+		auto e = std::move(postponed_exception);
+		postponed_exception = std::exception_ptr();
+		std::rethrow_exception(e);
 	}
-
-	return success;
 }
 
 bool
@@ -104,20 +95,18 @@ AsyncInputStream::IsEOF()
 		(!open && buffer.IsEmpty());
 }
 
-bool
-AsyncInputStream::Seek(offset_type new_offset, Error &error)
+void
+AsyncInputStream::Seek(offset_type new_offset)
 {
 	assert(IsReady());
 	assert(seek_state == SeekState::NONE);
 
 	if (new_offset == offset)
 		/* no-op */
-		return true;
+		return;
 
-	if (!IsSeekable()) {
-		error.Set(input_domain, "Not seekable");
-		return false;
-	}
+	if (!IsSeekable())
+		throw std::runtime_error("Not seekable");
 
 	/* check if we can fast-forward the buffer */
 
@@ -136,28 +125,25 @@ AsyncInputStream::Seek(offset_type new_offset, Error &error)
 	}
 
 	if (new_offset == offset)
-		return true;
+		return;
 
 	/* no: ask the implementation to seek */
 
 	seek_offset = new_offset;
 	seek_state = SeekState::SCHEDULED;
 
-	DeferredMonitor::Schedule();
+	deferred_seek.Schedule();
 
 	while (seek_state != SeekState::NONE)
 		cond.wait(mutex);
 
-	if (!Check(error))
-		return false;
-
-	return true;
+	Check();
 }
 
 void
 AsyncInputStream::SeekDone()
 {
-	assert(io_thread_inside());
+	assert(GetEventLoop().IsInside());
 	assert(IsSeekPending());
 
 	/* we may have reached end-of-file previously, and the
@@ -180,21 +166,20 @@ AsyncInputStream::ReadTag()
 bool
 AsyncInputStream::IsAvailable()
 {
-	return postponed_error.IsDefined() ||
+	return postponed_exception ||
 		IsEOF() ||
 		!buffer.IsEmpty();
 }
 
 size_t
-AsyncInputStream::Read(void *ptr, size_t read_size, Error &error)
+AsyncInputStream::Read(void *ptr, size_t read_size)
 {
-	assert(!io_thread_inside());
+	assert(!GetEventLoop().IsInside());
 
 	/* wait for data */
 	CircularBuffer<uint8_t>::Range r;
 	while (true) {
-		if (!Check(error))
-			return 0;
+		Check();
 
 		r = buffer.Read();
 		if (!r.IsEmpty() || IsEOF())
@@ -210,9 +195,20 @@ AsyncInputStream::Read(void *ptr, size_t read_size, Error &error)
 	offset += (offset_type)nbytes;
 
 	if (paused && buffer.GetSize() < resume_at)
-		DeferredMonitor::Schedule();
+		deferred_resume.Schedule();
 
 	return nbytes;
+}
+
+void
+AsyncInputStream::CommitWriteBuffer(size_t nbytes)
+{
+	buffer.Append(nbytes);
+
+	if (!IsReady())
+		SetReady();
+	else
+		cond.broadcast();
 }
 
 void
@@ -242,16 +238,36 @@ AsyncInputStream::AppendToBuffer(const void *data, size_t append_size)
 }
 
 void
-AsyncInputStream::RunDeferred()
+AsyncInputStream::DeferredResume()
 {
-	const ScopeLock protect(mutex);
+	const std::lock_guard<Mutex> protect(mutex);
 
-	Resume();
+	try {
+		Resume();
+	} catch (...) {
+		postponed_exception = std::current_exception();
+		cond.broadcast();
+	}
+}
 
-	if (seek_state == SeekState::SCHEDULED) {
+void
+AsyncInputStream::DeferredSeek()
+{
+	const std::lock_guard<Mutex> protect(mutex);
+	if (seek_state != SeekState::SCHEDULED)
+		return;
+
+	try {
+		Resume();
+
 		seek_state = SeekState::PENDING;
 		buffer.Clear();
 		paused = false;
+
 		DoSeek(seek_offset);
+	} catch (...) {
+		seek_state = SeekState::NONE;
+		postponed_exception = std::current_exception();
+		cond.broadcast();
 	}
 }

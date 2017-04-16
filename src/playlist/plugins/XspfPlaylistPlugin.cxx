@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -23,8 +23,7 @@
 #include "../MemorySongEnumerator.hxx"
 #include "DetachedSong.hxx"
 #include "input/InputStream.hxx"
-#include "tag/TagBuilder.hxx"
-#include "util/Error.hxx"
+#include "tag/Builder.hxx"
 #include "util/StringView.hxx"
 #include "lib/expat/ExpatParser.hxx"
 #include "Log.hxx"
@@ -197,12 +196,7 @@ xspf_open_stream(InputStreamPtr &&is)
 		ExpatParser expat(&parser);
 		expat.SetElementHandler(xspf_start_element, xspf_end_element);
 		expat.SetCharacterDataHandler(xspf_char_data);
-
-		Error error;
-		if (!expat.Parse(*is, error)) {
-			LogError(error);
-			return nullptr;
-		}
+		expat.Parse(*is);
 	}
 
 	parser.songs.reverse();

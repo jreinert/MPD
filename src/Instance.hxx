@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -21,6 +21,9 @@
 #define MPD_INSTANCE_HXX
 
 #include "check.h"
+#include "event/Loop.hxx"
+#include "event/Thread.hxx"
+#include "event/MaskMonitor.hxx"
 #include "Compiler.h"
 
 #ifdef ENABLE_NEIGHBOR_PLUGINS
@@ -35,14 +38,24 @@ class Storage;
 class UpdateService;
 #endif
 
-class EventLoop;
-class Error;
+#include <list>
+
 class ClientList;
 struct Partition;
+class StateFile;
+
+/**
+ * A utility class which, when used as the first base class, ensures
+ * that the #EventLoop gets initialized before the other base classes.
+ */
+struct EventLoopHolder {
+	EventLoop event_loop;
+};
 
 struct Instance final
+	: EventLoopHolder
 #if defined(ENABLE_DATABASE) || defined(ENABLE_NEIGHBOR_PLUGINS)
-	:
+	,
 #endif
 #ifdef ENABLE_DATABASE
 	public DatabaseListener
@@ -54,7 +67,9 @@ struct Instance final
 	public NeighborListener
 #endif
 {
-	EventLoop *event_loop;
+	EventThread io_thread;
+
+	MaskMonitor idle_monitor;
 
 #ifdef ENABLE_NEIGHBOR_PLUGINS
 	NeighborGlue *neighbors;
@@ -67,21 +82,36 @@ struct Instance final
 	 * This is really a #CompositeStorage.  To avoid heavy include
 	 * dependencies, we declare it as just #Storage.
 	 */
-	Storage *storage;
+	Storage *storage = nullptr;
 
-	UpdateService *update;
+	UpdateService *update = nullptr;
 #endif
 
 	ClientList *client_list;
 
-	Partition *partition;
+	std::list<Partition> partitions;
 
-	Instance() {
-#ifdef ENABLE_DATABASE
-		storage = nullptr;
-		update = nullptr;
-#endif
+	StateFile *state_file = nullptr;
+
+	Instance();
+
+	/**
+	 * Initiate shutdown.  Wrapper for EventLoop::Break().
+	 */
+	void Shutdown() {
+		event_loop.Break();
 	}
+
+	void EmitIdle(unsigned mask) {
+		idle_monitor.OrMask(mask);
+	}
+
+	/**
+	 * Find a #Partition with the given name.  Returns nullptr if
+	 * no such partition was found.
+	 */
+	gcc_pure
+	Partition *FindPartition(const char *name);
 
 #ifdef ENABLE_DATABASE
 	/**
@@ -89,31 +119,33 @@ struct Instance final
 	 * if this MPD configuration has no database (no
 	 * music_directory was configured).
 	 */
-	Database *GetDatabase(Error &error);
+	Database *GetDatabase() {
+		return database;
+	}
+
+	/**
+	 * Returns the global #Database instance.  Throws
+	 * DatabaseError if this MPD configuration has no database (no
+	 * music_directory was configured).
+	 */
+	gcc_pure
+	const Database &GetDatabaseOrThrow() const;
 #endif
-
-	/**
-	 * A tag in the play queue has been modified by the player
-	 * thread.  Propagate the change to all subsystems.
-	 */
-	void TagModified();
-
-	/**
-	 * Synchronize the player with the play queue.
-	 */
-	void SyncWithPlayer();
 
 private:
 #ifdef ENABLE_DATABASE
-	virtual void OnDatabaseModified() override;
-	virtual void OnDatabaseSongRemoved(const LightSong &song) override;
+	void OnDatabaseModified() override;
+	void OnDatabaseSongRemoved(const char *uri) override;
 #endif
 
 #ifdef ENABLE_NEIGHBOR_PLUGINS
 	/* virtual methods from class NeighborListener */
-	virtual void FoundNeighbor(const NeighborInfo &info) override;
-	virtual void LostNeighbor(const NeighborInfo &info) override;
+	void FoundNeighbor(const NeighborInfo &info) override;
+	void LostNeighbor(const NeighborInfo &info) override;
 #endif
+
+	/* callback for #idle_monitor */
+	void OnIdle(unsigned mask);
 };
 
 #endif

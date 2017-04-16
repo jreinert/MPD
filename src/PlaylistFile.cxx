@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -36,19 +36,16 @@
 #include "fs/Limits.hxx"
 #include "fs/AllocatedPath.hxx"
 #include "fs/Traits.hxx"
-#include "fs/Charset.hxx"
 #include "fs/FileSystem.hxx"
 #include "fs/FileInfo.hxx"
 #include "fs/DirectoryReader.hxx"
 #include "util/Macros.hxx"
 #include "util/StringCompare.hxx"
 #include "util/UriUtil.hxx"
-#include "util/Error.hxx"
 
 #include <memory>
 
 #include <assert.h>
-#include <sys/stat.h>
 #include <string.h>
 #include <errno.h>
 
@@ -125,24 +122,6 @@ spl_map_to_fs(const char *name_utf8)
 	return path_fs;
 }
 
-/**
- * Throw an exception for the current errno.
- */
-static void
-ThrowPlaylistErrno()
-{
-	switch (errno) {
-	case ENOENT:
-		throw PlaylistError(PlaylistResult::NO_SUCH_LIST,
-				    "No such playlist");
-
-	default:
-		throw std::system_error(std::error_code(errno,
-							std::system_category()),
-					"Error");
-	}
-}
-
 static bool
 LoadPlaylistFileInfo(PlaylistInfo &info,
 		     const Path parent_path_fs,
@@ -163,13 +142,13 @@ LoadPlaylistFileInfo(PlaylistInfo &info,
 	    !fi.IsRegular())
 		return false;
 
-	PathTraitsFS::string name(name_fs_str, name_fs_end);
-	std::string name_utf8 = PathToUTF8(name.c_str());
+	const auto name = AllocatedPath::FromFS(name_fs_str, name_fs_end);
+	std::string name_utf8 = name.ToUTF8();
 	if (name_utf8.empty())
 		return false;
 
 	info.name = std::move(name_utf8);
-	info.mtime = fi.GetModificationTime();
+	info.mtime = std::chrono::system_clock::to_time_t(fi.GetModificationTime());
 	return true;
 }
 
@@ -202,7 +181,6 @@ SavePlaylistFile(const PlaylistFileContents &contents, const char *utf8path)
 	assert(!path_fs.IsNull());
 
 	FileOutputStream fos(path_fs);
-
 	BufferedOutputStream bos(fos);
 
 	for (const auto &uri_utf8 : contents)
@@ -305,11 +283,15 @@ spl_clear(const char *utf8path)
 	const auto path_fs = spl_map_to_fs(utf8path);
 	assert(!path_fs.IsNull());
 
-	FILE *file = FOpen(path_fs, FOpenMode::WriteText);
-	if (file == nullptr)
-		ThrowPlaylistErrno();
-
-	fclose(file);
+	try {
+		TruncateFile(path_fs);
+	} catch (const std::system_error &e) {
+		if (IsFileNotFound(e))
+			throw PlaylistError(PlaylistResult::NO_SUCH_LIST,
+					    "No such playlist");
+		else
+			throw;
+	}
 
 	idle_add(IDLE_STORED_PLAYLIST);
 }
@@ -320,8 +302,15 @@ spl_delete(const char *name_utf8)
 	const auto path_fs = spl_map_to_fs(name_utf8);
 	assert(!path_fs.IsNull());
 
-	if (!RemoveFile(path_fs))
-		ThrowPlaylistErrno();
+	try {
+		RemoveFile(path_fs);
+	} catch (const std::system_error &e) {
+		if (IsFileNotFound(e))
+			throw PlaylistError(PlaylistResult::NO_SUCH_LIST,
+					    "No such playlist");
+		else
+			throw;
+	}
 
 	idle_add(IDLE_STORED_PLAYLIST);
 }
@@ -346,7 +335,7 @@ try {
 	const auto path_fs = spl_map_to_fs(utf8path);
 	assert(!path_fs.IsNull());
 
-	AppendFileOutputStream fos(path_fs);
+	FileOutputStream fos(path_fs, FileOutputStream::Mode::APPEND_OR_CREATE);
 
 	if (fos.Tell() / (MPD_PATH_MAX + 1) >= playlist_max_length)
 		throw PlaylistError(PlaylistResult::TOO_LARGE,
@@ -366,32 +355,29 @@ try {
 	throw;
 }
 
-bool
+void
 spl_append_uri(const char *utf8file,
-	       const SongLoader &loader, const char *url,
-	       Error &error)
+	       const SongLoader &loader, const char *url)
 {
-	std::unique_ptr<DetachedSong> song(loader.LoadSong(url, error));
-	if (song == nullptr)
-		return false;
-
-	spl_append_song(utf8file, *song);
-	return true;
+	spl_append_song(utf8file, loader.LoadSong(url));
 }
 
 static void
 spl_rename_internal(Path from_path_fs, Path to_path_fs)
 {
-	if (!FileExists(from_path_fs))
-		throw PlaylistError(PlaylistResult::NO_SUCH_LIST,
-				    "No such playlist");
-
 	if (FileExists(to_path_fs))
 		throw PlaylistError(PlaylistResult::LIST_EXISTS,
 				    "Playlist exists already");
 
-	if (!RenameFile(from_path_fs, to_path_fs))
-		ThrowPlaylistErrno();
+	try {
+		RenameFile(from_path_fs, to_path_fs);
+	} catch (const std::system_error &e) {
+		if (IsFileNotFound(e))
+			throw PlaylistError(PlaylistResult::NO_SUCH_LIST,
+					    "No such playlist");
+		else
+			throw;
+	}
 
 	idle_add(IDLE_STORED_PLAYLIST);
 }

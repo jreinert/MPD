@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -25,7 +25,6 @@
 
 struct StoragePlugin;
 class Storage;
-class Error;
 class EventLoop;
 
 /**
@@ -40,6 +39,6 @@ GetStoragePluginByName(const char *name);
 
 gcc_nonnull_all gcc_malloc
 Storage *
-CreateStorageURI(EventLoop &event_loop, const char *uri, Error &error);
+CreateStorageURI(EventLoop &event_loop, const char *uri);
 
 #endif

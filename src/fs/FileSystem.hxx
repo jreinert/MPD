@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -37,23 +37,11 @@
 
 class AllocatedPath;
 
-namespace FOpenMode {
-	/**
-	 * Open mode for writing text files.
-	 */
-	constexpr PathTraitsFS::const_pointer WriteText = PATH_LITERAL("w");
-
-	/**
-	 * Open mode for appending text files.
-	 */
-	constexpr PathTraitsFS::const_pointer AppendText = PATH_LITERAL("a");
-}
-
 /**
  * Wrapper for fopen() that uses #Path names.
  */
 static inline FILE *
-FOpen(Path file, PathTraitsFS::const_pointer mode)
+FOpen(Path file, PathTraitsFS::const_pointer_type mode)
 {
 #ifdef WIN32
 	return _tfopen(file.c_str(), mode);
@@ -75,18 +63,13 @@ OpenFile(Path file, int flags, int mode)
 #endif
 }
 
-/**
+/*
  * Wrapper for rename() that uses #Path names.
+ *
+ * Throws std::system_error on error.
  */
-static inline bool
-RenameFile(Path oldpath, Path newpath)
-{
-#ifdef WIN32
-	return _trename(oldpath.c_str(), newpath.c_str()) == 0;
-#else
-	return rename(oldpath.c_str(), newpath.c_str()) == 0;
-#endif
-}
+void
+RenameFile(Path oldpath, Path newpath);
 
 #ifndef WIN32
 
@@ -105,17 +88,18 @@ StatFile(Path file, struct stat &buf, bool follow_symlinks = true)
 #endif
 
 /**
- * Wrapper for unlink() that uses #Path names.
+ * Truncate a file that exists already.  Throws std::system_error on
+ * error.
  */
-static inline bool
-RemoveFile(Path file)
-{
-#ifdef WIN32
-	return _tunlink(file.c_str()) == 0;
-#else
-	return unlink(file.c_str()) == 0;
-#endif
-}
+void
+TruncateFile(Path path);
+
+/**
+ * Wrapper for unlink() that uses #Path names.  Throws
+ * std::system_error on error.
+ */
+void
+RemoveFile(Path path);
 
 /**
  * Wrapper for readlink() that uses #Path names.

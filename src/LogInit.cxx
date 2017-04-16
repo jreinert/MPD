@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -24,18 +24,16 @@
 #include "config/Param.hxx"
 #include "config/ConfigGlobal.hxx"
 #include "config/ConfigOption.hxx"
-#include "system/FatalError.hxx"
 #include "fs/AllocatedPath.hxx"
 #include "fs/FileSystem.hxx"
-#include "util/Error.hxx"
 #include "util/Domain.hxx"
-#include "system/FatalError.hxx"
+#include "util/RuntimeError.hxx"
+#include "system/Error.hxx"
 
 #include <assert.h>
 #include <string.h>
 #include <fcntl.h>
 #include <stdio.h>
-#include <time.h>
 #include <unistd.h>
 
 #define LOG_LEVEL_SECURE LogLevel::INFO
@@ -47,16 +45,16 @@ static constexpr Domain log_domain("log");
 
 #ifndef ANDROID
 
-static int out_fd;
+static int out_fd = -1;
 static AllocatedPath out_path = AllocatedPath::Null();
 
 static void redirect_logs(int fd)
 {
 	assert(fd >= 0);
 	if (dup2(fd, STDOUT_FILENO) < 0)
-		FatalSystemError("Failed to dup2 stdout");
+		throw MakeErrno("Failed to dup2 stdout");
 	if (dup2(fd, STDERR_FILENO) < 0)
-		FatalSystemError("Failed to dup2 stderr");
+		throw MakeErrno("Failed to dup2 stderr");
 }
 
 static int
@@ -67,21 +65,26 @@ open_log_file(void)
 	return OpenFile(out_path, O_CREAT | O_WRONLY | O_APPEND, 0666);
 }
 
-static bool
-log_init_file(int line, Error &error)
+static void
+log_init_file(int line)
 {
 	assert(!out_path.IsNull());
 
 	out_fd = open_log_file();
 	if (out_fd < 0) {
+#ifdef WIN32
 		const std::string out_path_utf8 = out_path.ToUTF8();
-		error.FormatErrno("failed to open log file \"%s\" (config line %d)",
+		throw FormatRuntimeError("failed to open log file \"%s\" (config line %d)",
+					 out_path_utf8.c_str(), line);
+#else
+		int e = errno;
+		const std::string out_path_utf8 = out_path.ToUTF8();
+		throw FormatErrno(e, "failed to open log file \"%s\" (config line %d)",
 				  out_path_utf8.c_str(), line);
-		return false;
+#endif
 	}
 
 	EnableLogTimestamp();
-	return true;
 }
 
 static inline LogLevel
@@ -93,10 +96,9 @@ parse_log_level(const char *value, int line)
 		return LOG_LEVEL_SECURE;
 	else if (0 == strcmp(value, "verbose"))
 		return LogLevel::DEBUG;
-	else {
-		FormatFatalError("unknown log level \"%s\" at line %d",
-				 value, line);
-	}
+	else
+		throw FormatRuntimeError("unknown log level \"%s\" at line %d",
+					 value, line);
 }
 
 #endif
@@ -115,48 +117,36 @@ log_early_init(bool verbose)
 #endif
 }
 
-bool
-log_init(bool verbose, bool use_stdout, Error &error)
+void
+log_init(bool verbose, bool use_stdout)
 {
 #ifdef ANDROID
 	(void)verbose;
 	(void)use_stdout;
-	(void)error;
-
-	return true;
 #else
-	const struct config_param *param;
-
 	if (verbose)
 		SetLogThreshold(LogLevel::DEBUG);
-	else if ((param = config_get_param(ConfigOption::LOG_LEVEL)) != nullptr)
+	else if (const auto &param = config_get_param(ConfigOption::LOG_LEVEL))
 		SetLogThreshold(parse_log_level(param->value.c_str(),
 						param->line));
 
 	if (use_stdout) {
-		return true;
+		out_fd = STDOUT_FILENO;
 	} else {
-		param = config_get_param(ConfigOption::LOG_FILE);
+		const auto *param = config_get_param(ConfigOption::LOG_FILE);
 		if (param == nullptr) {
-#ifdef HAVE_SYSLOG
 			/* no configuration: default to syslog (if
 			   available) */
-			LogInitSysLog();
-			return true;
-#else
-			error.Set(log_domain,
-				  "config parameter 'log_file' not found");
-			return false;
+#ifndef HAVE_SYSLOG
+			throw std::runtime_error("config parameter 'log_file' not found");
 #endif
 #ifdef HAVE_SYSLOG
 		} else if (strcmp(param->value.c_str(), "syslog") == 0) {
 			LogInitSysLog();
-			return true;
 #endif
 		} else {
-			out_path = config_get_path(ConfigOption::LOG_FILE, error);
-			return !out_path.IsNull() &&
-				log_init_file(param->line, error);
+			out_path = param->GetPath();
+			log_init_file(param->line);
 		}
 	}
 #endif
@@ -183,12 +173,10 @@ log_deinit(void)
 #endif
 }
 
-void setup_log_output(bool use_stdout)
+void setup_log_output()
 {
-#ifdef ANDROID
-	(void)use_stdout;
-#else
-	if (use_stdout)
+#ifndef ANDROID
+	if (out_fd == STDOUT_FILENO)
 		return;
 
 	fflush(nullptr);

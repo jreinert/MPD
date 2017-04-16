@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -37,10 +37,10 @@ class DirectoryReader {
 	bool first = true;
 
 	class MakeWildcardPath {
-		PathTraitsFS::pointer path;
+		PathTraitsFS::pointer_type path;
 
 	public:
-		MakeWildcardPath(PathTraitsFS::const_pointer _path) {
+		MakeWildcardPath(PathTraitsFS::const_pointer_type _path) {
 			auto l = _tcslen(_path);
 			path = new PathTraitsFS::value_type[l + 3];
 			_tcscpy(path, _path);
@@ -53,7 +53,7 @@ class DirectoryReader {
 			delete[] path;
 		}
 
-		operator PathTraitsFS::const_pointer() const {
+		operator PathTraitsFS::const_pointer_type() const {
 			return path;
 		}
 	};

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -24,7 +24,6 @@
 #include "client/ClientList.hxx"
 #include "client/Response.hxx"
 #include "Instance.hxx"
-#include "Partition.hxx"
 #include "util/ConstBuffer.hxx"
 
 #include <set>
@@ -80,7 +79,7 @@ handle_channels(Client &client, gcc_unused Request args, Response &r)
 	assert(args.IsEmpty());
 
 	std::set<std::string> channels;
-	for (const auto &c : *client.partition.instance.client_list)
+	for (const auto &c : *client.GetInstance().client_list)
 		channels.insert(c.subscriptions.begin(),
 				c.subscriptions.end());
 
@@ -122,7 +121,7 @@ handle_send_message(Client &client, Request args, Response &r)
 
 	bool sent = false;
 	const ClientMessage msg(channel_name, message_text);
-	for (auto &c : *client.partition.instance.client_list)
+	for (auto &c : *client.GetInstance().client_list)
 		if (c.PushMessage(msg))
 			sent = true;
 

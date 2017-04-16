@@ -7,7 +7,7 @@
 #include "DetachedSong.hxx"
 #include "SongLoader.hxx"
 #include "client/Client.hxx"
-#include "tag/TagBuilder.hxx"
+#include "tag/Builder.hxx"
 #include "tag/Tag.hxx"
 #include "util/Domain.hxx"
 #include "fs/AllocatedPath.hxx"
@@ -15,7 +15,6 @@
 #include "Log.hxx"
 #include "db/DatabaseSong.hxx"
 #include "storage/plugins/LocalStorage.hxx"
-#include "util/Error.hxx"
 #include "Mapper.hxx"
 
 #include <cppunit/TestFixture.h>
@@ -35,7 +34,7 @@ Log(const Domain &domain, gcc_unused LogLevel level, const char *msg)
 bool
 uri_supported_scheme(const char *uri)
 {
-	return memcmp(uri, "http://", 7) == 0;
+	return strncmp(uri, "http://", 7) == 0;
 }
 
 static constexpr auto music_directory = PATH_LITERAL("/music");
@@ -108,16 +107,15 @@ MakeTag2c()
 static const char *uri1 = "/foo/bar.ogg";
 static const char *uri2 = "foo/bar.ogg";
 
-DetachedSong *
+DetachedSong
 DatabaseDetachSong(gcc_unused const Database &db,
-		   gcc_unused const Storage &_storage,
-		   const char *uri,
-		   gcc_unused Error &error)
+		   gcc_unused const Storage *_storage,
+		   const char *uri)
 {
 	if (strcmp(uri, uri2) == 0)
-		return new DetachedSong(uri, MakeTag2a());
+		return DetachedSong(uri, MakeTag2a());
 
-	return nullptr;
+	throw std::runtime_error("No such song");
 }
 
 bool
@@ -132,7 +130,7 @@ DetachedSong::LoadFile(Path path)
 }
 
 const Database *
-Client::GetDatabase(gcc_unused Error &error) const
+Client::GetDatabase() const
 {
 	return reinterpret_cast<const Database *>(this);
 }
@@ -143,13 +141,13 @@ Client::GetStorage() const
 	return ::storage;
 }
 
-bool
-Client::AllowFile(gcc_unused Path path_fs, gcc_unused Error &error) const
+void
+Client::AllowFile(gcc_unused Path path_fs) const
 {
-	/* always return false, so a SongLoader with a non-nullptr
+	/* always fail, so a SongLoader with a non-nullptr
 	   Client pointer will be regarded "insecure", while one with
 	   client==nullptr will allow all files */
-	return false;
+	throw std::runtime_error("foo");
 }
 
 static std::string

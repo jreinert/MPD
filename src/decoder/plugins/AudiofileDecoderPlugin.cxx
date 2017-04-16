@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -22,14 +22,15 @@
 #include "../DecoderAPI.hxx"
 #include "input/InputStream.hxx"
 #include "CheckAudioFormat.hxx"
-#include "tag/TagHandler.hxx"
-#include "fs/Path.hxx"
-#include "util/Error.hxx"
+#include "tag/Handler.hxx"
+#include "util/ScopeExit.hxx"
 #include "util/Domain.hxx"
 #include "Log.hxx"
 
 #include <audiofile.h>
 #include <af_vfs.h>
+
+#include <stdexcept>
 
 #include <assert.h>
 #include <stdio.h>
@@ -50,14 +51,14 @@ audiofile_init(const ConfigBlock &)
 }
 
 struct AudioFileInputStream {
-	Decoder *const decoder;
+	DecoderClient *const client;
 	InputStream &is;
 
 	size_t Read(void *buffer, size_t size) {
 		/* libaudiofile does not like partial reads at all,
 		   and will abort playback; therefore always force full
 		   reads */
-		return decoder_read_full(decoder, is, buffer, size)
+		return decoder_read_full(client, is, buffer, size)
 			? size
 			: 0;
 	}
@@ -116,11 +117,11 @@ audiofile_file_seek(AFvirtualfile *vfile, AFfileoffset _offset,
 	if (is_relative)
 		offset += is.GetOffset();
 
-	Error error;
-	if (is.LockSeek(offset, error)) {
+	try {
+		is.LockSeek(offset);
 		return is.GetOffset();
-	} else {
-		LogError(error, "Seek failed");
+	} catch (const std::runtime_error &e) {
+		LogError(e, "Seek failed");
 		return -1;
 	}
 }
@@ -180,31 +181,26 @@ audiofile_setup_sample_format(AFfilehandle af_fp)
 }
 
 static void
-audiofile_stream_decode(Decoder &decoder, InputStream &is)
+audiofile_stream_decode(DecoderClient &client, InputStream &is)
 {
 	if (!is.IsSeekable() || !is.KnownSize()) {
 		LogWarning(audiofile_domain, "not seekable");
 		return;
 	}
 
-	AudioFileInputStream afis{&decoder, is};
+	AudioFileInputStream afis{&client, is};
 	AFvirtualfile *const vf = setup_virtual_fops(afis);
 
 	const AFfilehandle fh = afOpenVirtualFile(vf, "r", nullptr);
 	if (fh == AF_NULL_FILEHANDLE)
 		return;
 
-	Error error;
-	AudioFormat audio_format;
-	if (!audio_format_init_checked(audio_format,
-				       afGetRate(fh, AF_DEFAULT_TRACK),
-				       audiofile_setup_sample_format(fh),
-				       afGetVirtualChannels(fh, AF_DEFAULT_TRACK),
-				       error)) {
-		LogError(error);
-		afCloseFile(fh);
-		return;
-	}
+	AtScopeExit(fh) { afCloseFile(fh); };
+
+	const auto audio_format =
+		CheckAudioFormat(afGetRate(fh, AF_DEFAULT_TRACK),
+				 audiofile_setup_sample_format(fh),
+				 afGetVirtualChannels(fh, AF_DEFAULT_TRACK));
 
 	const auto total_time = audiofile_get_duration(fh);
 
@@ -214,7 +210,7 @@ audiofile_stream_decode(Decoder &decoder, InputStream &is)
 	const unsigned frame_size = (unsigned)
 		afGetVirtualFrameSize(fh, AF_DEFAULT_TRACK, true);
 
-	decoder_initialized(decoder, audio_format, true, total_time);
+	client.Ready(audio_format, true, total_time);
 
 	DecoderCommand cmd;
 	do {
@@ -227,20 +223,18 @@ audiofile_stream_decode(Decoder &decoder, InputStream &is)
 		if (nframes <= 0)
 			break;
 
-		cmd = decoder_data(decoder, nullptr,
-				   chunk, nframes * frame_size,
-				   kbit_rate);
+		cmd = client.SubmitData(nullptr,
+					chunk, nframes * frame_size,
+					kbit_rate);
 
 		if (cmd == DecoderCommand::SEEK) {
-			AFframecount frame = decoder_seek_where_frame(decoder);
+			AFframecount frame = client.GetSeekFrame();
 			afSeekFrame(fh, AF_DEFAULT_TRACK, frame);
 
-			decoder_command_finished(decoder);
+			client.CommandFinished();
 			cmd = DecoderCommand::NONE;
 		}
 	} while (cmd == DecoderCommand::NONE);
-
-	afCloseFile(fh);
 }
 
 gcc_pure

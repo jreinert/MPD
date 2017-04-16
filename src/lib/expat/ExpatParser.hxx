@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -28,23 +28,31 @@
 #include <stdexcept>
 
 class InputStream;
-class Error;
 
 class ExpatError final : public std::runtime_error {
 public:
-	ExpatError(XML_Error code)
+	explicit ExpatError(XML_Error code)
 		:std::runtime_error(XML_ErrorString(code)) {}
 
-	ExpatError(XML_Parser parser)
+	explicit ExpatError(XML_Parser parser)
 		:ExpatError(XML_GetErrorCode(parser)) {}
+};
+
+struct ExpatNamespaceSeparator {
+	char separator;
 };
 
 class ExpatParser final {
 	const XML_Parser parser;
 
 public:
-	ExpatParser(void *userData)
+	explicit ExpatParser(void *userData)
 		:parser(XML_ParserCreate(nullptr)) {
+		XML_SetUserData(parser, userData);
+	}
+
+	ExpatParser(ExpatNamespaceSeparator ns, void *userData)
+		:parser(XML_ParserCreateNS(nullptr, ns.separator)) {
 		XML_SetUserData(parser, userData);
 	}
 
@@ -66,7 +74,7 @@ public:
 
 	void Parse(const char *data, size_t length, bool is_final);
 
-	bool Parse(InputStream &is, Error &error);
+	void Parse(InputStream &is);
 
 	gcc_pure
 	static const char *GetAttribute(const XML_Char **atts,
@@ -75,9 +83,6 @@ public:
 	gcc_pure
 	static const char *GetAttributeCase(const XML_Char **atts,
 					    const char *name);
-
-private:
-	void SetError(Error &error);
 };
 
 /**
@@ -93,12 +98,18 @@ public:
 		parser.SetCharacterDataHandler(CharacterData);
 	}
 
+	explicit CommonExpatParser(ExpatNamespaceSeparator ns)
+		:parser(ns, this) {
+		parser.SetElementHandler(StartElement, EndElement);
+		parser.SetCharacterDataHandler(CharacterData);
+	}
+
 	void Parse(const char *data, size_t length, bool is_final) {
 		parser.Parse(data, length, is_final);
 	}
 
-	bool Parse(InputStream &is, Error &error) {
-		return parser.Parse(is, error);
+	void Parse(InputStream &is) {
+		parser.Parse(is);
 	}
 
 	gcc_pure

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -28,7 +28,7 @@
 #include "../PlaylistPlugin.hxx"
 #include "../SongEnumerator.hxx"
 #include "../cue/CueParser.hxx"
-#include "tag/TagHandler.hxx"
+#include "tag/Handler.hxx"
 #include "tag/Generic.hxx"
 #include "DetachedSong.hxx"
 #include "TagFile.hxx"
@@ -96,9 +96,7 @@ embcue_playlist_open_uri(const char *uri,
 		/* only local files supported */
 		return nullptr;
 
-	const auto path_fs = AllocatedPath::FromUTF8(uri);
-	if (path_fs.IsNull())
-		return nullptr;
+	const auto path_fs = AllocatedPath::FromUTF8Throw(uri);
 
 	const auto playlist = new EmbeddedCuePlaylist();
 

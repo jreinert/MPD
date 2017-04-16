@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -24,11 +24,10 @@
 #include "input/TextInputStream.hxx"
 #include "input/InputStream.hxx"
 #include "DetachedSong.hxx"
-#include "tag/TagBuilder.hxx"
+#include "tag/Builder.hxx"
 #include "util/ASCII.hxx"
 #include "util/StringUtil.hxx"
 #include "util/DivideString.hxx"
-#include "util/Error.hxx"
 
 #include <string>
 

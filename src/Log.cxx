@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -19,15 +19,15 @@
 
 #include "config.h"
 #include "LogV.hxx"
-#include "util/Error.hxx"
 #include "util/Domain.hxx"
 
 #include <exception>
 
-#include <assert.h>
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
+
+static constexpr Domain exception_domain("exception");
 
 void
 LogFormatV(const Domain &domain, LogLevel level, const char *fmt, va_list ap)
@@ -122,20 +122,7 @@ LogError(const std::exception &e, const char *msg)
 }
 
 void
-LogError(const Error &error)
-{
-	Log(error.GetDomain(), LogLevel::ERROR, error.GetMessage());
-}
-
-void
-LogError(const Error &error, const char *msg)
-{
-	LogFormat(error.GetDomain(), LogLevel::ERROR, "%s: %s",
-		  msg, error.GetMessage());
-}
-
-void
-FormatError(const Error &error, const char *fmt, ...)
+FormatError(const std::exception &e, const char *fmt, ...)
 {
 	char msg[1024];
 	va_list ap;
@@ -143,7 +130,45 @@ FormatError(const Error &error, const char *fmt, ...)
 	vsnprintf(msg, sizeof(msg), fmt, ap);
 	va_end(ap);
 
-	LogError(error, msg);
+	LogError(e, msg);
+}
+
+void
+LogError(const std::exception_ptr &ep)
+{
+	try {
+		std::rethrow_exception(ep);
+	} catch (const std::exception &e) {
+		LogError(e);
+	} catch (...) {
+		Log(exception_domain, LogLevel::ERROR,
+		    "Unrecognized exception");
+	}
+}
+
+void
+LogError(const std::exception_ptr &ep, const char *msg)
+{
+	try {
+		std::rethrow_exception(ep);
+	} catch (const std::exception &e) {
+		LogError(e, msg);
+	} catch (...) {
+		FormatError(exception_domain,
+			    "%s: Unrecognized exception", msg);
+	}
+}
+
+void
+FormatError(const std::exception_ptr &ep, const char *fmt, ...)
+{
+	char msg[1024];
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(msg, sizeof(msg), fmt, ap);
+	va_end(ap);
+
+	LogError(ep, msg);
 }
 
 void

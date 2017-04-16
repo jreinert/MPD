@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -22,20 +22,18 @@
 #include "Glue.hxx"
 #include "Base.hxx"
 #include "Connection.hxx"
-#include "Domain.hxx"
 #include "event/Call.hxx"
-#include "IOThread.hxx"
 #include "util/StringCompare.hxx"
-#include "util/Error.hxx"
 
 #include <utility>
 
 #include <assert.h>
 #include <string.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 
 NfsFileReader::NfsFileReader()
-	:DeferredMonitor(io_thread_get()), state(State::INITIAL)
+	:DeferredMonitor(nfs_get_event_loop()), state(State::INITIAL)
 {
 }
 
@@ -87,26 +85,22 @@ NfsFileReader::CancelOrClose()
 void
 NfsFileReader::DeferClose()
 {
-	BlockingCall(io_thread_get(), [this](){ Close(); });
+	BlockingCall(GetEventLoop(), [this](){ Close(); });
 }
 
-bool
-NfsFileReader::Open(const char *uri, Error &error)
+void
+NfsFileReader::Open(const char *uri)
 {
 	assert(state == State::INITIAL);
 
-	if (!StringStartsWith(uri, "nfs://")) {
-		error.Set(nfs_domain, "Malformed nfs:// URI");
-		return false;
-	}
+	if (!StringStartsWith(uri, "nfs://"))
+		throw std::runtime_error("Malformed nfs:// URI");
 
 	uri += 6;
 
 	const char *slash = strchr(uri, '/');
-	if (slash == nullptr) {
-		error.Set(nfs_domain, "Malformed nfs:// URI");
-		return false;
-	}
+	if (slash == nullptr)
+		throw std::runtime_error("Malformed nfs:// URI");
 
 	server = std::string(uri, slash);
 
@@ -120,10 +114,8 @@ NfsFileReader::Open(const char *uri, Error &error)
 		path = new_path;
 	} else {
 		slash = strrchr(uri + 1, '/');
-		if (slash == nullptr || slash[1] == 0) {
-			error.Set(nfs_domain, "Malformed nfs:// URI");
-			return false;
-		}
+		if (slash == nullptr || slash[1] == 0)
+			throw std::runtime_error("Malformed nfs:// URI");
 
 		export_name = std::string(uri, slash);
 		path = slash;
@@ -131,19 +123,15 @@ NfsFileReader::Open(const char *uri, Error &error)
 
 	state = State::DEFER;
 	DeferredMonitor::Schedule();
-	return true;
 }
 
-bool
-NfsFileReader::Read(uint64_t offset, size_t size, Error &error)
+void
+NfsFileReader::Read(uint64_t offset, size_t size)
 {
 	assert(state == State::IDLE);
 
-	if (!connection->Read(fh, offset, size, *this, error))
-		return false;
-
+	connection->Read(fh, offset, size, *this);
 	state = State::READ;
-	return true;
 }
 
 void
@@ -160,9 +148,10 @@ NfsFileReader::OnNfsConnectionReady()
 {
 	assert(state == State::MOUNT);
 
-	Error error;
-	if (!connection->Open(path, O_RDONLY, *this, error)) {
-		OnNfsFileError(std::move(error));
+	try {
+		connection->Open(path, O_RDONLY, *this);
+	} catch (...) {
+		OnNfsFileError(std::current_exception());
 		return;
 	}
 
@@ -170,27 +159,23 @@ NfsFileReader::OnNfsConnectionReady()
 }
 
 void
-NfsFileReader::OnNfsConnectionFailed(const Error &error)
+NfsFileReader::OnNfsConnectionFailed(std::exception_ptr e)
 {
 	assert(state == State::MOUNT);
 
 	state = State::INITIAL;
 
-	Error copy;
-	copy.Set(error);
-	OnNfsFileError(std::move(copy));
+	OnNfsFileError(std::move(e));
 }
 
 void
-NfsFileReader::OnNfsConnectionDisconnected(const Error &error)
+NfsFileReader::OnNfsConnectionDisconnected(std::exception_ptr e)
 {
 	assert(state > State::MOUNT);
 
 	CancelOrClose();
 
-	Error copy;
-	copy.Set(error);
-	OnNfsFileError(std::move(copy));
+	OnNfsFileError(std::move(e));
 }
 
 inline void
@@ -202,9 +187,10 @@ NfsFileReader::OpenCallback(nfsfh *_fh)
 
 	fh = _fh;
 
-	Error error;
-	if (!connection->Stat(fh, *this, error)) {
-		OnNfsFileError(std::move(error));
+	try {
+		connection->Stat(fh, *this);
+	} catch (...) {
+		OnNfsFileError(std::current_exception());
 		return;
 	}
 
@@ -220,7 +206,7 @@ NfsFileReader::StatCallback(const struct stat *st)
 	assert(st != nullptr);
 
 	if (!S_ISREG(st->st_mode)) {
-		OnNfsFileError(Error(nfs_domain, "Not a regular file"));
+		OnNfsFileError(std::make_exception_ptr(std::runtime_error("Not a regular file")));
 		return;
 	}
 
@@ -256,7 +242,7 @@ NfsFileReader::OnNfsCallback(unsigned status, void *data)
 }
 
 void
-NfsFileReader::OnNfsError(Error &&error)
+NfsFileReader::OnNfsError(std::exception_ptr &&e)
 {
 	switch (state) {
 	case State::INITIAL:
@@ -282,7 +268,7 @@ NfsFileReader::OnNfsError(Error &&error)
 		break;
 	}
 
-	OnNfsFileError(std::move(error));
+	OnNfsFileError(std::move(e));
 }
 
 void

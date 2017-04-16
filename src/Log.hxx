@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -23,11 +23,8 @@
 #include "LogLevel.hxx"
 #include "Compiler.h"
 
-namespace std {
-	class exception;
-}
+#include <exception>
 
-class Error;
 class Domain;
 
 void
@@ -91,17 +88,21 @@ LogError(const std::exception &e, const char *msg);
 
 gcc_printf(2,3)
 void
-FormatError(const Domain &domain, const char *fmt, ...);
+FormatError(const std::exception &e, const char *fmt, ...);
 
 void
-LogError(const Error &error);
+LogError(const std::exception_ptr &ep);
 
 void
-LogError(const Error &error, const char *msg);
+LogError(const std::exception_ptr &ep, const char *msg);
 
 gcc_printf(2,3)
 void
-FormatError(const Error &error, const char *fmt, ...);
+FormatError(const std::exception_ptr &ep, const char *fmt, ...);
+
+gcc_printf(2,3)
+void
+FormatError(const Domain &domain, const char *fmt, ...);
 
 void
 LogErrno(const Domain &domain, int e, const char *msg);

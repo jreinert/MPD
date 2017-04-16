@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -24,11 +24,11 @@
 
 #include <array>
 
-struct config_param;
+struct ConfigParam;
 struct ConfigBlock;
 
 struct ConfigData {
-	std::array<config_param *, std::size_t(ConfigOption::MAX)> params;
+	std::array<ConfigParam *, std::size_t(ConfigOption::MAX)> params;
 	std::array<ConfigBlock *, std::size_t(ConfigBlockOption::MAX)> blocks;
 
 	void Clear();

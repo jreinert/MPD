@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -27,16 +27,16 @@
 #include "DsdLib.hxx"
 #include "../DecoderAPI.hxx"
 #include "input/InputStream.hxx"
-#include "tag/TagId3.hxx"
-#include "util/Error.hxx"
-#include "util/Alloc.hxx"
-
-#include <string.h>
-#include <stdlib.h>
+#include "tag/Id3Scan.hxx"
 
 #ifdef ENABLE_ID3TAG
 #include <id3tag.h>
 #endif
+
+#include <stdexcept>
+
+#include <string.h>
+#include <stdlib.h>
 
 bool
 DsdId::Equals(const char *s) const
@@ -51,37 +51,47 @@ DsdId::Equals(const char *s) const
  * Skip the #InputStream to the specified offset.
  */
 bool
-dsdlib_skip_to(Decoder *decoder, InputStream &is,
+dsdlib_skip_to(DecoderClient *client, InputStream &is,
 	       offset_type offset)
 {
-	if (is.IsSeekable())
-		return is.LockSeek(offset, IgnoreError());
+	if (is.IsSeekable()) {
+		try {
+			is.LockSeek(offset);
+		} catch (const std::runtime_error &) {
+			return false;
+		}
+	}
 
 	if (is.GetOffset() > offset)
 		return false;
 
-	return dsdlib_skip(decoder, is, offset - is.GetOffset());
+	return dsdlib_skip(client, is, offset - is.GetOffset());
 }
 
 /**
  * Skip some bytes from the #InputStream.
  */
 bool
-dsdlib_skip(Decoder *decoder, InputStream &is,
+dsdlib_skip(DecoderClient *client, InputStream &is,
 	    offset_type delta)
 {
 	if (delta == 0)
 		return true;
 
-	if (is.IsSeekable())
-		return is.LockSeek(is.GetOffset() + delta, IgnoreError());
+	if (is.IsSeekable()) {
+		try {
+			is.LockSeek(is.GetOffset() + delta);
+		} catch (const std::runtime_error &) {
+			return false;
+		}
+	}
 
 	if (delta > 1024 * 1024)
 		/* don't skip more than one megabyte; it would be too
 		   expensive */
 		return false;
 
-	return decoder_skip(decoder, is, delta);
+	return decoder_skip(client, is, delta);
 }
 
 bool

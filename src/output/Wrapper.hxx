@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -20,7 +20,10 @@
 #ifndef MPD_OUTPUT_WRAPPER_HXX
 #define MPD_OUTPUT_WRAPPER_HXX
 
+#include "Internal.hxx"
 #include "util/Cast.hxx"
+
+#include <chrono>
 
 struct ConfigBlock;
 
@@ -30,11 +33,10 @@ struct AudioOutputWrapper {
 		return ContainerCast(ao, &T::base);
 	}
 
-	static AudioOutput *Init(const ConfigBlock &block, Error &error) {
-		T *t = T::Create(block, error);
-		return t != nullptr
-			? &t->base
-			: nullptr;
+	static AudioOutput *Init(EventLoop &event_loop,
+				 const ConfigBlock &block) {
+		T *t = T::Create(event_loop, block);
+		return &t->base;
 	}
 
 	static void Finish(AudioOutput *ao) {
@@ -42,9 +44,9 @@ struct AudioOutputWrapper {
 		delete t;
 	}
 
-	static bool Enable(AudioOutput *ao, Error &error) {
+	static void Enable(AudioOutput *ao) {
 		T &t = Cast(*ao);
-		return t.Enable(error);
+		t.Enable();
 	}
 
 	static void Disable(AudioOutput *ao) {
@@ -52,10 +54,9 @@ struct AudioOutputWrapper {
 		t.Disable();
 	}
 
-	static bool Open(AudioOutput *ao, AudioFormat &audio_format,
-			 Error &error) {
+	static void Open(AudioOutput *ao, AudioFormat &audio_format) {
 		T &t = Cast(*ao);
-		return t.Open(audio_format, error);
+		t.Open(audio_format);
 	}
 
 	static void Close(AudioOutput *ao) {
@@ -64,7 +65,7 @@ struct AudioOutputWrapper {
 	}
 
 	gcc_pure
-	static unsigned Delay(AudioOutput *ao) {
+	static std::chrono::steady_clock::duration Delay(AudioOutput *ao) {
 		T &t = Cast(*ao);
 		return t.Delay();
 	}
@@ -75,10 +76,9 @@ struct AudioOutputWrapper {
 		t.SendTag(tag);
 	}
 
-	static size_t Play(AudioOutput *ao, const void *chunk, size_t size,
-			   Error &error) {
+	static size_t Play(AudioOutput *ao, const void *chunk, size_t size) {
 		T &t = Cast(*ao);
-		return t.Play(chunk, size, error);
+		return t.Play(chunk, size);
 	}
 
 	static void Drain(AudioOutput *ao) {

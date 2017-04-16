@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -20,7 +20,7 @@
 #ifndef MPD_AUTOCONVERT_FILTER_PLUGIN_HXX
 #define MPD_AUTOCONVERT_FILTER_PLUGIN_HXX
 
-class Filter;
+class PreparedFilter;
 
 /**
  * Creates a new "autoconvert" filter.  When opened, it ensures that
@@ -28,7 +28,7 @@ class Filter;
  * requests a different format, it automatically creates a
  * convert_filter.
  */
-Filter *
-autoconvert_filter_new(Filter *filter);
+PreparedFilter *
+autoconvert_filter_new(PreparedFilter *filter);
 
 #endif

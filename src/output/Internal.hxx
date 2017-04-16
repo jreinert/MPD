@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -20,38 +20,39 @@
 #ifndef MPD_OUTPUT_INTERNAL_HXX
 #define MPD_OUTPUT_INTERNAL_HXX
 
+#include "Source.hxx"
+#include "SharedPipeConsumer.hxx"
 #include "AudioFormat.hxx"
-#include "pcm/PcmBuffer.hxx"
-#include "pcm/PcmDither.hxx"
-#include "ReplayGainInfo.hxx"
+#include "filter/Observer.hxx"
 #include "thread/Mutex.hxx"
 #include "thread/Cond.hxx"
 #include "thread/Thread.hxx"
 #include "system/PeriodClock.hxx"
 
-class Error;
-class Filter;
+#include <exception>
+
+class PreparedFilter;
 class MusicPipe;
 class EventLoop;
 class Mixer;
 class MixerListener;
+class AudioOutputClient;
 struct MusicChunk;
 struct ConfigBlock;
-struct PlayerControl;
 struct AudioOutputPlugin;
+struct ReplayGainConfig;
 
 struct AudioOutput {
 	enum class Command {
 		NONE,
 		ENABLE,
 		DISABLE,
-		OPEN,
 
 		/**
-		 * This command is invoked when the input audio format
-		 * changes.
+		 * Open the output, or reopen it if it is already
+		 * open, adjusting for input #AudioFormat changes.
 		 */
-		REOPEN,
+		OPEN,
 
 		CLOSE,
 		PAUSE,
@@ -81,7 +82,7 @@ struct AudioOutput {
 	 * May be nullptr if none is available, or if software volume is
 	 * configured.
 	 */
-	Mixer *mixer;
+	Mixer *mixer = nullptr;
 
 	/**
 	 * Will this output receive tags from the decoder?  The
@@ -99,13 +100,13 @@ struct AudioOutput {
 	/**
 	 * Has the user enabled this device?
 	 */
-	bool enabled;
+	bool enabled = true;
 
 	/**
 	 * Is this device actually enabled, i.e. the "enable" method
 	 * has succeeded?
 	 */
-	bool really_enabled;
+	bool really_enabled = false;
 
 	/**
 	 * Is the device (already) open and functional?
@@ -115,13 +116,13 @@ struct AudioOutput {
 	 * output thread and read accesses outside of it may only be
 	 * performed while the lock is held.
 	 */
-	bool open;
+	bool open = false;
 
 	/**
 	 * Is the device paused?  i.e. the output thread is in the
 	 * ao_pause() loop.
 	 */
-	bool pause;
+	bool pause = false;
 
 	/**
 	 * When this flag is set, the output thread will not do any
@@ -130,7 +131,7 @@ struct AudioOutput {
 	 * This is used to synchronize the "clear" operation on the
 	 * shared music pipe during the CANCEL command.
 	 */
-	bool allow_play;
+	bool allow_play = true;
 
 	/**
 	 * True while the OutputThread is inside ao_play().  This
@@ -138,14 +139,14 @@ struct AudioOutput {
 	 * OutputThread when new chunks are added to the MusicPipe,
 	 * because the OutputThread is already watching that.
 	 */
-	bool in_playback_loop;
+	bool in_playback_loop = false;
 
 	/**
 	 * Has the OutputThread been woken up to play more chunks?
 	 * This is set by audio_output_play() and reset by ao_play()
 	 * to reduce the number of duplicate wakeups.
 	 */
-	bool woken_for_play;
+	bool woken_for_play = false;
 
 	/**
 	 * If not nullptr, the device has failed, and this timer is used
@@ -160,10 +161,12 @@ struct AudioOutput {
 	AudioFormat config_audio_format;
 
 	/**
-	 * The audio_format in which audio data is received from the
-	 * player thread (which in turn receives it from the decoder).
+	 * The #AudioFormat which is emitted by the #Filter, with
+	 * #config_audio_format already applied.  This is used to
+	 * decide whether this object needs to be closed and reopened
+	 * upon #AudioFormat changes.
 	 */
-	AudioFormat in_audio_format;
+	AudioFormat filter_audio_format;
 
 	/**
 	 * The audio_format which is really sent to the device.  This
@@ -174,45 +177,29 @@ struct AudioOutput {
 	AudioFormat out_audio_format;
 
 	/**
-	 * The buffer used to allocate the cross-fading result.
-	 */
-	PcmBuffer cross_fade_buffer;
-
-	/**
-	 * The dithering state for cross-fading two streams.
-	 */
-	PcmDither cross_fade_dither;
-
-	/**
 	 * The filter object of this audio output.  This is an
 	 * instance of chain_filter_plugin.
 	 */
-	Filter *filter;
+	PreparedFilter *prepared_filter = nullptr;
+
+	/**
+	 * The #VolumeFilter instance of this audio output.  It is
+	 * used by the #SoftwareMixer.
+	 */
+	FilterObserver volume_filter;
 
 	/**
 	 * The replay_gain_filter_plugin instance of this audio
 	 * output.
 	 */
-	Filter *replay_gain_filter;
-
-	/**
-	 * The serial number of the last replay gain info.  0 means no
-	 * replay gain info was available.
-	 */
-	unsigned replay_gain_serial;
+	PreparedFilter *prepared_replay_gain_filter = nullptr;
 
 	/**
 	 * The replay_gain_filter_plugin instance of this audio
 	 * output, to be applied to the second chunk during
 	 * cross-fading.
 	 */
-	Filter *other_replay_gain_filter;
-
-	/**
-	 * The serial number of the last replay gain info by the
-	 * "other" chunk during cross-fading.
-	 */
-	unsigned other_replay_gain_serial;
+	PreparedFilter *prepared_other_replay_gain_filter = nullptr;
 
 	/**
 	 * The convert_filter_plugin instance of this audio output.
@@ -220,7 +207,7 @@ struct AudioOutput {
 	 * for converting the input data into the appropriate format
 	 * for this audio output.
 	 */
-	Filter *convert_filter;
+	FilterObserver convert_filter;
 
 	/**
 	 * The thread handle, or nullptr if the output thread isn't
@@ -231,18 +218,27 @@ struct AudioOutput {
 	/**
 	 * The next command to be performed by the output thread.
 	 */
-	Command command;
+	Command command = Command::NONE;
 
 	/**
-	 * The music pipe which provides music chunks to be played.
+	 * Additional data for #command.  Protected by #mutex.
 	 */
-	const MusicPipe *pipe;
+	struct Request {
+		/**
+		 * The #AudioFormat requested by #Command::OPEN.
+		 */
+		AudioFormat audio_format;
+
+		/**
+		 * The #MusicPipe passed to #Command::OPEN.
+		 */
+		const MusicPipe *pipe;
+	} request;
 
 	/**
-	 * This mutex protects #open, #fail_timer, #current_chunk and
-	 * #current_chunk_finished.
+	 * This mutex protects #open, #fail_timer, #pipe.
 	 */
-	Mutex mutex;
+	mutable Mutex mutex;
 
 	/**
 	 * This condition object wakes up the output thread after
@@ -254,37 +250,74 @@ struct AudioOutput {
 	 * The PlayerControl object which "owns" this output.  This
 	 * object is needed to signal command completion.
 	 */
-	PlayerControl *player_control;
+	AudioOutputClient *client;
 
 	/**
-	 * The #MusicChunk which is currently being played.  All
-	 * chunks before this one may be returned to the
-	 * #music_buffer, because they are not going to be used by
-	 * this output anymore.
+	 * Source of audio data.
 	 */
-	const MusicChunk *current_chunk;
+	AudioOutputSource source;
 
 	/**
-	 * Has the output finished playing #current_chunk?
+	 * The error that occurred in the output thread.  It is
+	 * cleared whenever the output is opened successfully.
+	 *
+	 * Protected by #mutex.
 	 */
-	bool current_chunk_finished;
+	std::exception_ptr last_error;
 
-	AudioOutput(const AudioOutputPlugin &_plugin);
+	/**
+	 * Throws #std::runtime_error on error.
+	 */
+	AudioOutput(const AudioOutputPlugin &_plugin,
+		    const ConfigBlock &block);
+
 	~AudioOutput();
 
-	bool Configure(const ConfigBlock &block, Error &error);
+private:
+	void Configure(const ConfigBlock &block);
+
+public:
+	void Setup(EventLoop &event_loop,
+		   const ReplayGainConfig &replay_gain_config,
+		   MixerListener &mixer_listener,
+		   const ConfigBlock &block);
 
 	void StartThread();
 	void StopThread();
 
-	void Finish();
+	void BeginDestroy();
+	void FinishDestroy();
 
+	const char *GetName() const {
+		return name;
+	}
+
+	/**
+	 * Caller must lock the mutex.
+	 */
+	bool IsEnabled() const {
+		return enabled;
+	}
+
+	/**
+	 * Caller must lock the mutex.
+	 */
 	bool IsOpen() const {
 		return open;
 	}
 
+	/**
+	 * Caller must lock the mutex.
+	 */
 	bool IsCommandFinished() const {
 		return command == Command::NONE;
+	}
+
+	/**
+	 * Caller must lock the mutex.
+	 */
+	const std::exception_ptr &GetLastError() const {
+		return last_error;
 	}
 
 	/**
@@ -316,14 +349,35 @@ struct AudioOutput {
 	void LockCommandWait(Command cmd);
 
 	/**
-	 * Enables the device.
+	 * Enables the device, but don't wait for completion.
+	 *
+	 * Caller must lock the mutex.
 	 */
-	void LockEnableWait();
+	void EnableAsync();
 
 	/**
-	 * Disables the device.
+	 * Disables the device, but don't wait for completion.
+	 *
+	 * Caller must lock the mutex.
 	 */
-	void LockDisableWait();
+	void DisableAsync();
+
+	/**
+	 * Attempt to enable or disable the device as specified by the
+	 * #enabled attribute; attempt to sync it with #really_enabled
+	 * (wrapper for EnableAsync() or DisableAsync()).
+	 *
+	 * Caller must lock the mutex.
+	 */
+	void EnableDisableAsync() {
+		if (enabled == really_enabled)
+			return;
+
+		if (enabled)
+			EnableAsync();
+		else
+			DisableAsync();
+	}
 
 	void LockPauseAsync();
 
@@ -340,7 +394,9 @@ struct AudioOutput {
 	 */
 	void LockRelease();
 
-	void SetReplayGainMode(ReplayGainMode mode);
+	void SetReplayGainMode(ReplayGainMode _mode) {
+		source.SetReplayGainMode(_mode);
+	}
 
 	/**
 	 * Caller must lock the mutex.
@@ -351,10 +407,12 @@ struct AudioOutput {
 	 * Opens or closes the device, depending on the "enabled"
 	 * flag.
 	 *
+	 * @param force true to ignore the #fail_timer
 	 * @return true if the device is open
 	 */
 	bool LockUpdate(const AudioFormat audio_format,
-			const MusicPipe &mp);
+			const MusicPipe &mp,
+			bool force);
 
 	void LockPlay();
 
@@ -372,15 +430,50 @@ struct AudioOutput {
 	 */
 	void LockAllowPlay();
 
+	/**
+	 * Did we already consumed this chunk?
+	 *
+	 * Caller must lock the mutex.
+	 */
+	gcc_pure
+	bool IsChunkConsumed(const MusicChunk &chunk) const;
+
+	gcc_pure
+	bool LockIsChunkConsumed(const MusicChunk &chunk) {
+		const std::lock_guard<Mutex> protect(mutex);
+		return IsChunkConsumed(chunk);
+	}
+
+	void ClearTailChunk(const MusicChunk &chunk) {
+		source.ClearTailChunk(chunk);
+	}
+
 private:
 	void CommandFinished();
 
-	bool Enable();
+	/**
+	 * Throws #std::runtime_error on error.
+	 */
+	void Enable();
+
 	void Disable();
 
+	/**
+	 * Throws #std::runtime_error on error.
+	 */
 	void Open();
+
+	/**
+	 * Invoke OutputPlugin::open() and configure the
+	 * #ConvertFilter.
+	 *
+	 * Throws #std::runtime_error on error.
+	 *
+	 * Caller must not lock the mutex.
+	 */
+	void OpenOutputAndConvert(AudioFormat audio_format);
+
 	void Close(bool drain);
-	void Reopen();
 
 	/**
 	 * Close the output plugin.
@@ -389,14 +482,10 @@ private:
 	 */
 	void CloseOutput(bool drain);
 
-	AudioFormat OpenFilter(AudioFormat &format, Error &error_r);
-
 	/**
 	 * Mutex must not be locked.
 	 */
 	void CloseFilter();
-
-	void ReopenFilter();
 
 	/**
 	 * Wait until the output's delay reaches zero.
@@ -406,10 +495,9 @@ private:
 	 */
 	bool WaitForDelay();
 
-	gcc_pure
-	const MusicChunk *GetNextChunk() const;
+	bool FillSourceOrClose();
 
-	bool PlayChunk(const MusicChunk *chunk);
+	bool PlayChunk();
 
 	/**
 	 * Plays all remaining chunks, until the tail of the pipe has
@@ -427,7 +515,6 @@ private:
 	 * The OutputThread.
 	 */
 	void Task();
-	static void Task(void *arg);
 };
 
 /**
@@ -436,11 +523,15 @@ private:
  */
 extern struct notify audio_output_client_notify;
 
+/**
+ * Throws #std::runtime_error on error.
+ */
 AudioOutput *
-audio_output_new(EventLoop &event_loop, const ConfigBlock &block,
+audio_output_new(EventLoop &event_loop,
+		 const ReplayGainConfig &replay_gain_config,
+		 const ConfigBlock &block,
 		 MixerListener &mixer_listener,
-		 PlayerControl &pc,
-		 Error &error);
+		 AudioOutputClient &client);
 
 void
 audio_output_free(AudioOutput *ao);

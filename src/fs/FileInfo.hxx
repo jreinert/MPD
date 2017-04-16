@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -22,16 +22,17 @@
 
 #include "check.h"
 #include "Path.hxx"
-#include "util/Error.hxx"
 #include "system/Error.hxx"
-
-#include <stdint.h>
 
 #ifdef WIN32
 #include <fileapi.h>
 #else
 #include <sys/stat.h>
 #endif
+
+#include <chrono>
+
+#include <stdint.h>
 
 #ifdef WIN32
 
@@ -48,13 +49,18 @@ FileTimeToTimeT(FILETIME ft)
 		- 116444736000000000) / 10000000;
 }
 
+static std::chrono::system_clock::time_point
+FileTimeToChrono(FILETIME ft)
+{
+	// TODO: eliminate the time_t roundtrip, preserve sub-second resolution
+	return std::chrono::system_clock::from_time_t(FileTimeToTimeT(ft));
+}
+
 #endif
 
 class FileInfo {
 	friend bool GetFileInfo(Path path, FileInfo &info,
 				bool follow_symlinks);
-	friend bool GetFileInfo(Path path, FileInfo &info,
-				Error &error);
 	friend class FileReader;
 
 #ifdef WIN32
@@ -103,11 +109,11 @@ public:
 #endif
 	}
 
-	time_t GetModificationTime() const {
+	std::chrono::system_clock::time_point GetModificationTime() const {
 #ifdef WIN32
-		return FileTimeToTimeT(data.ftLastWriteTime);
+		return FileTimeToChrono(data.ftLastWriteTime);
 #else
-		return st.st_mtime;
+		return std::chrono::system_clock::from_time_t(st.st_mtime);
 #endif
 	}
 
@@ -143,29 +149,6 @@ GetFileInfo(Path path, FileInfo &info, bool follow_symlinks=true)
 		: lstat(path.c_str(), &info.st);
 	return ret == 0;
 #endif
-}
-
-inline bool
-GetFileInfo(Path path, FileInfo &info, bool follow_symlinks, Error &error)
-{
-	bool success = GetFileInfo(path, info, follow_symlinks);
-	if (!success) {
-		const auto path_utf8 = path.ToUTF8();
-#ifdef WIN32
-		error.FormatLastError("Failed to access %s",
-				      path_utf8.c_str());
-#else
-		error.FormatErrno("Failed to access %s", path_utf8.c_str());
-#endif
-	}
-
-	return success;
-}
-
-inline bool
-GetFileInfo(Path path, FileInfo &info, Error &error)
-{
-	return GetFileInfo(path, info, true, error);
 }
 
 #endif

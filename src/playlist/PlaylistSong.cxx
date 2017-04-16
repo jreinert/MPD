@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -21,13 +21,13 @@
 #include "PlaylistSong.hxx"
 #include "SongLoader.hxx"
 #include "tag/Tag.hxx"
-#include "tag/TagBuilder.hxx"
+#include "tag/Builder.hxx"
 #include "fs/Traits.hxx"
 #include "util/UriUtil.hxx"
-#include "util/Error.hxx"
 #include "DetachedSong.hxx"
 
-#include <assert.h>
+#include <stdexcept>
+
 #include <string.h>
 
 static void
@@ -44,18 +44,17 @@ merge_song_metadata(DetachedSong &add, const DetachedSong &base)
 
 static bool
 playlist_check_load_song(DetachedSong &song, const SongLoader &loader)
-{
-	DetachedSong *tmp = loader.LoadSong(song.GetURI(), IgnoreError());
-	if (tmp == nullptr)
-		return false;
+try {
+	DetachedSong tmp = loader.LoadSong(song.GetURI());
 
-	song.SetURI(tmp->GetURI());
-	if (!song.HasRealURI() && tmp->HasRealURI())
-		song.SetRealURI(tmp->GetRealURI());
+	song.SetURI(tmp.GetURI());
+	if (!song.HasRealURI() && tmp.HasRealURI())
+		song.SetRealURI(tmp.GetRealURI());
 
-	merge_song_metadata(song, *tmp);
-	delete tmp;
+	merge_song_metadata(song, tmp);
 	return true;
+} catch (const std::runtime_error &) {
+	return false;
 }
 
 bool

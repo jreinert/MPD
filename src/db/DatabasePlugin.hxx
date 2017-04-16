@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -27,7 +27,6 @@
 #define MPD_DATABASE_PLUGIN_HXX
 
 struct ConfigBlock;
-class Error;
 class EventLoop;
 class DatabaseListener;
 class Database;
@@ -45,10 +44,11 @@ struct DatabasePlugin {
 
 	/**
 	 * Allocates and configures a database.
+	 *
+	 * Throws #std::runtime_error on error.
 	 */
 	Database *(*create)(EventLoop &loop, DatabaseListener &listener,
-			    const ConfigBlock &block,
-			    Error &error);
+			    const ConfigBlock &block);
 
 	constexpr bool RequireStorage() const {
 		return flags & FLAG_REQUIRE_STORAGE;

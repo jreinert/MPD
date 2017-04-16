@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -28,13 +28,11 @@ enum TagType : uint8_t;
 struct Partition;
 class Response;
 class SongFilter;
-class Error;
 
 gcc_nonnull(3)
-bool
+void
 PrintSongCount(Response &r, const Partition &partition, const char *name,
 	       const SongFilter *filter,
-	       TagType group,
-	       Error &error);
+	       TagType group);
 
 #endif

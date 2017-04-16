@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -24,7 +24,7 @@
 #include "Request.hxx"
 #include "CommandError.hxx"
 #include "util/UriUtil.hxx"
-#include "util/Error.hxx"
+#include "util/ChronoUtil.hxx"
 #include "util/ConstBuffer.hxx"
 #include "fs/Traits.hxx"
 #include "client/Client.hxx"
@@ -37,8 +37,9 @@
 #include "db/plugins/simple/SimpleDatabasePlugin.hxx"
 #include "db/update/Service.hxx"
 #include "TimePrint.hxx"
-#include "IOThread.hxx"
 #include "Idle.hxx"
+
+#include <memory>
 
 #include <inttypes.h> /* for PRIu64 */
 
@@ -56,9 +57,8 @@ skip_path(const char *name_utf8)
 #pragma GCC diagnostic ignored "-Wformat-extra-args"
 #endif
 
-static bool
-handle_listfiles_storage(Response &r, StorageDirectoryReader &reader,
-			 Error &error)
+static void
+handle_listfiles_storage(Response &r, StorageDirectoryReader &reader)
 {
 	const char *name_utf8;
 	while ((name_utf8 = reader.Read()) != nullptr) {
@@ -66,8 +66,11 @@ handle_listfiles_storage(Response &r, StorageDirectoryReader &reader,
 			continue;
 
 		StorageFileInfo info;
-		if (!reader.GetInfo(false, info, error))
+		try {
+			info = reader.GetInfo(false);
+		} catch (const std::runtime_error &) {
 			continue;
+		}
 
 		switch (info.type) {
 		case StorageFileInfo::Type::OTHER:
@@ -86,59 +89,34 @@ handle_listfiles_storage(Response &r, StorageDirectoryReader &reader,
 			break;
 		}
 
-		if (info.mtime != 0)
+		if (!IsNegative(info.mtime))
 			time_print(r, "Last-Modified", info.mtime);
 	}
-
-	return true;
 }
 
 #if defined(WIN32) && GCC_CHECK_VERSION(4,6)
 #pragma GCC diagnostic pop
 #endif
 
-static bool
-handle_listfiles_storage(Response &r, Storage &storage, const char *uri,
-			 Error &error)
-{
-	auto reader = storage.OpenDirectory(uri, error);
-	if (reader == nullptr)
-		return false;
-
-	bool success = handle_listfiles_storage(r, *reader, error);
-	delete reader;
-	return success;
-}
-
 CommandResult
 handle_listfiles_storage(Response &r, Storage &storage, const char *uri)
 {
-	Error error;
-	if (!handle_listfiles_storage(r, storage, uri, error))
-		return print_error(r, error);
-
+	std::unique_ptr<StorageDirectoryReader> reader(storage.OpenDirectory(uri));
+	handle_listfiles_storage(r, *reader);
 	return CommandResult::OK;
 }
 
 CommandResult
-handle_listfiles_storage(Response &r, const char *uri)
+handle_listfiles_storage(Client &client, Response &r, const char *uri)
 {
-	Error error;
-	Storage *storage = CreateStorageURI(io_thread_get(), uri, error);
+	auto &event_loop = client.GetInstance().io_thread.GetEventLoop();
+	std::unique_ptr<Storage> storage(CreateStorageURI(event_loop, uri));
 	if (storage == nullptr) {
-		if (error.IsDefined())
-			return print_error(r, error);
-
 		r.Error(ACK_ERROR_ARG, "Unrecognized storage URI");
 		return CommandResult::ERROR;
 	}
 
-	bool success = handle_listfiles_storage(r, *storage, "", error);
-	delete storage;
-	if (!success)
-		return print_error(r, error);
-
-	return CommandResult::OK;
+	return handle_listfiles_storage(r, *storage, "");
 }
 
 static void
@@ -170,7 +148,7 @@ print_storage_uri(Client &client, Response &r, const Storage &storage)
 CommandResult
 handle_listmounts(Client &client, gcc_unused Request args, Response &r)
 {
-	Storage *_composite = client.partition.instance.storage;
+	Storage *_composite = client.GetInstance().storage;
 	if (_composite == nullptr) {
 		r.Error(ACK_ERROR_NO_EXIST, "No database");
 		return CommandResult::ERROR;
@@ -192,7 +170,9 @@ handle_listmounts(Client &client, gcc_unused Request args, Response &r)
 CommandResult
 handle_mount(Client &client, Request args, Response &r)
 {
-	Storage *_composite = client.partition.instance.storage;
+	auto &instance = client.GetInstance();
+
+	Storage *_composite = instance.storage;
 	if (_composite == nullptr) {
 		r.Error(ACK_ERROR_NO_EXIST, "No database");
 		return CommandResult::ERROR;
@@ -218,30 +198,23 @@ handle_mount(Client &client, Request args, Response &r)
 		return CommandResult::ERROR;
 	}
 
-	Error error;
-	Storage *storage = CreateStorageURI(io_thread_get(), remote_uri,
-					    error);
+	auto &event_loop = instance.io_thread.GetEventLoop();
+	Storage *storage = CreateStorageURI(event_loop, remote_uri);
 	if (storage == nullptr) {
-		if (error.IsDefined())
-			return print_error(r, error);
-
 		r.Error(ACK_ERROR_ARG, "Unrecognized storage URI");
 		return CommandResult::ERROR;
 	}
 
 	composite.Mount(local_uri, storage);
-	idle_add(IDLE_MOUNT);
+	instance.EmitIdle(IDLE_MOUNT);
 
 #ifdef ENABLE_DATABASE
-	Database *_db = client.partition.instance.database;
+	Database *_db = instance.database;
 	if (_db != nullptr && _db->IsPlugin(simple_db_plugin)) {
 		SimpleDatabase &db = *(SimpleDatabase *)_db;
 
 		try {
-			if (!db.Mount(local_uri, remote_uri, error)) {
-				composite.Unmount(local_uri);
-				return print_error(r, error);
-			}
+			db.Mount(local_uri, remote_uri);
 		} catch (...) {
 			composite.Unmount(local_uri);
 			throw;
@@ -249,7 +222,7 @@ handle_mount(Client &client, Request args, Response &r)
 
 		// TODO: call Instance::OnDatabaseModified()?
 		// TODO: trigger database update?
-		idle_add(IDLE_DATABASE);
+		instance.EmitIdle(IDLE_DATABASE);
 	}
 #endif
 
@@ -259,7 +232,9 @@ handle_mount(Client &client, Request args, Response &r)
 CommandResult
 handle_unmount(Client &client, Request args, Response &r)
 {
-	Storage *_composite = client.partition.instance.storage;
+	auto &instance = client.GetInstance();
+
+	Storage *_composite = instance.storage;
 	if (_composite == nullptr) {
 		r.Error(ACK_ERROR_NO_EXIST, "No database");
 		return CommandResult::ERROR;
@@ -275,19 +250,19 @@ handle_unmount(Client &client, Request args, Response &r)
 	}
 
 #ifdef ENABLE_DATABASE
-	if (client.partition.instance.update != nullptr)
+	if (instance.update != nullptr)
 		/* ensure that no database update will attempt to work
 		   with the database/storage instances we're about to
 		   destroy here */
-		client.partition.instance.update->CancelMount(local_uri);
+		instance.update->CancelMount(local_uri);
 
-	Database *_db = client.partition.instance.database;
+	Database *_db = instance.database;
 	if (_db != nullptr && _db->IsPlugin(simple_db_plugin)) {
 		SimpleDatabase &db = *(SimpleDatabase *)_db;
 
 		if (db.Unmount(local_uri))
 			// TODO: call Instance::OnDatabaseModified()?
-			idle_add(IDLE_DATABASE);
+			instance.EmitIdle(IDLE_DATABASE);
 	}
 #endif
 
@@ -296,7 +271,7 @@ handle_unmount(Client &client, Request args, Response &r)
 		return CommandResult::ERROR;
 	}
 
-	idle_add(IDLE_MOUNT);
+	instance.EmitIdle(IDLE_MOUNT);
 
 	return CommandResult::OK;
 }

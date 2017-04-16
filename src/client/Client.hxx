@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -23,42 +23,44 @@
 #include "check.h"
 #include "ClientMessage.hxx"
 #include "command/CommandListBuilder.hxx"
+#include "tag/Mask.hxx"
 #include "event/FullyBufferedSocket.hxx"
 #include "event/TimeoutMonitor.hxx"
 #include "Compiler.h"
 
-#include <boost/intrusive/list.hpp>
+#include <boost/intrusive/link_mode.hpp>
+#include <boost/intrusive/list_hook.hpp>
 
 #include <set>
 #include <string>
 #include <list>
 
 #include <stddef.h>
-#include <stdarg.h>
 
 class SocketAddress;
 class EventLoop;
 class Path;
+struct Instance;
 struct Partition;
+struct PlayerControl;
+struct playlist;
 class Database;
 class Storage;
 
 class Client final
 	: FullyBufferedSocket, TimeoutMonitor,
 	  public boost::intrusive::list_base_hook<boost::intrusive::link_mode<boost::intrusive::normal_link>> {
-public:
-	Partition &partition;
-	struct playlist &playlist;
-	struct PlayerControl &player_control;
+	Partition *partition;
 
+public:
 	unsigned permission;
 
 	/** the uid of the client process, or -1 if unknown */
-	int uid;
+	const int uid;
 
 	CommandListBuilder cmd_list;
 
-	unsigned int num;	/* client number */
+	const unsigned int num;	/* client number */
 
 	/** is this client waiting for an "idle" response? */
 	bool idle_waiting;
@@ -69,6 +71,11 @@ public:
 
 	/** idle flags that the client wants to receive */
 	unsigned idle_subscriptions;
+
+	/**
+	 * The tags this client is interested in.
+	 */
+	TagMask tag_mask = TagMask::All();
 
 	/**
 	 * A list of channel names this client is subscribed to.
@@ -107,6 +114,11 @@ public:
 	void SetExpired();
 
 	bool Write(const void *data, size_t length);
+
+	/**
+	 * Write a null-terminated string.
+	 */
+	bool Write(const char *data);
 
 	/**
 	 * returns the uid of the client process, or a negative value
@@ -170,28 +182,54 @@ public:
 	 * We cannot fix this as long as there are plugins that open a file by
 	 * its name, and not by file descriptor / callbacks.
 	 *
+	 * Throws #std::runtime_error on error.
+	 *
 	 * @param path_fs the absolute path name in filesystem encoding
-	 * @return true if access is allowed
 	 */
-	bool AllowFile(Path path_fs, Error &error) const;
+	void AllowFile(Path path_fs) const;
+
+	Partition &GetPartition() {
+		return *partition;
+	}
+
+	void SetPartition(Partition &new_partition) {
+		partition = &new_partition;
+
+		// TODO: set various idle flags?
+	}
+
+	gcc_pure
+	Instance &GetInstance();
+
+	gcc_pure
+	playlist &GetPlaylist();
+
+	gcc_pure
+	PlayerControl &GetPlayerControl();
 
 	/**
 	 * Wrapper for Instance::GetDatabase().
 	 */
 	gcc_pure
-	const Database *GetDatabase(Error &error) const;
+	const Database *GetDatabase() const;
+
+	/**
+	 * Wrapper for Instance::GetDatabaseOrThrow().
+	 */
+	gcc_pure
+	const Database &GetDatabaseOrThrow() const;
 
 	gcc_pure
 	const Storage *GetStorage() const;
 
 private:
 	/* virtual methods from class BufferedSocket */
-	virtual InputResult OnSocketInput(void *data, size_t length) override;
-	virtual void OnSocketError(Error &&error) override;
-	virtual void OnSocketClosed() override;
+	InputResult OnSocketInput(void *data, size_t length) override;
+	void OnSocketError(std::exception_ptr ep) override;
+	void OnSocketClosed() override;
 
 	/* virtual methods from class TimeoutMonitor */
-	virtual void OnTimeout() override;
+	void OnTimeout() override;
 };
 
 void
@@ -200,16 +238,6 @@ client_manager_init();
 void
 client_new(EventLoop &loop, Partition &partition,
 	   int fd, SocketAddress address, int uid);
-
-/**
- * Write a C string to the client.
- */
-void client_puts(Client &client, const char *s);
-
-/**
- * Write a printf-like formatted string to the client.
- */
-void client_vprintf(Client &client, const char *fmt, va_list args);
 
 /**
  * Write a printf-like formatted string to the client.

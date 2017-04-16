@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -19,19 +19,25 @@
 
 #include "config.h"
 #include "AlsaOutputPlugin.hxx"
+#include "lib/alsa/NonBlock.hxx"
+#include "lib/alsa/Version.hxx"
 #include "../OutputAPI.hxx"
 #include "../Wrapper.hxx"
 #include "mixer/MixerList.hxx"
 #include "pcm/PcmExport.hxx"
-#include "config/ConfigError.hxx"
 #include "system/ByteOrder.hxx"
 #include "util/Manual.hxx"
-#include "util/Error.hxx"
+#include "util/RuntimeError.hxx"
 #include "util/Domain.hxx"
 #include "util/ConstBuffer.hxx"
+#include "event/MultiSocketMonitor.hxx"
+#include "event/DeferredMonitor.hxx"
+#include "event/Call.hxx"
 #include "Log.hxx"
 
 #include <alsa/asoundlib.h>
+
+#include <boost/lockfree/spsc_queue.hpp>
 
 #include <string>
 
@@ -51,7 +57,11 @@ static constexpr unsigned MPD_ALSA_BUFFER_TIME_US = 500000;
 
 static constexpr unsigned MPD_ALSA_RETRY_NR = 5;
 
-struct AlsaOutput {
+class AlsaOutput final
+	: MultiSocketMonitor, DeferredMonitor {
+
+	friend struct AudioOutputWrapper<AlsaOutput>;
+
 	AudioOutput base;
 
 	Manual<PcmExport> pcm_export;
@@ -60,7 +70,7 @@ struct AlsaOutput {
 	 * The configured name of the ALSA device; empty for the
 	 * default device
 	 */
-	std::string device;
+	const std::string device;
 
 #ifdef ENABLE_DSD
 	/**
@@ -68,17 +78,17 @@ struct AlsaOutput {
 	 *
 	 * @see http://dsd-guide.com/dop-open-standard
 	 */
-	bool dop;
+	const bool dop;
 #endif
 
 	/** libasound's buffer_time setting (in microseconds) */
-	unsigned int buffer_time;
+	const unsigned buffer_time;
 
 	/** libasound's period_time setting (in microseconds) */
-	unsigned int period_time;
+	const unsigned period_time;
 
 	/** the mode flags passed to snd_pcm_open */
-	int mode;
+	int mode = 0;
 
 	/** the libasound PCM device handle */
 	snd_pcm_t *pcm;
@@ -99,9 +109,21 @@ struct AlsaOutput {
 	snd_pcm_uframes_t period_frames;
 
 	/**
-	 * The number of frames written in the current period.
+	 * Is this a buggy alsa-lib version, which needs a workaround
+	 * for the snd_pcm_drain() bug always returning -EAGAIN?  See
+	 * alsa-lib commits fdc898d41135 and e4377b16454f for details.
+	 * This bug was fixed in alsa-lib version 1.1.4.
+	 *
+	 * The workaround is to re-enable blocking mode for the
+	 * snd_pcm_drain() call.
 	 */
-	snd_pcm_uframes_t period_position;
+	bool work_around_drain_bug;
+
+	/**
+	 * After Open(), has this output been activated by a Play()
+	 * command?
+	 */
+	bool active;
 
 	/**
 	 * Do we need to call snd_pcm_prepare() before the next write?
@@ -115,6 +137,8 @@ struct AlsaOutput {
 	 */
 	bool must_prepare;
 
+	bool drain;
+
 	/**
 	 * This buffer gets allocated after opening the ALSA device.
 	 * It contains silence samples, enough to fill one period (see
@@ -122,10 +146,137 @@ struct AlsaOutput {
 	 */
 	uint8_t *silence;
 
-	AlsaOutput()
-		:base(alsa_output_plugin),
-		 mode(0) {
-	}
+	/**
+	 * For PrepareAlsaPcmSockets().
+	 */
+	ReusableArray<pollfd> pfd_buffer;
+
+	/**
+	 * For copying data from OutputThread to IOThread.
+	 */
+	boost::lockfree::spsc_queue<uint8_t> *ring_buffer;
+
+	class PeriodBuffer {
+		size_t capacity, head, tail;
+
+		uint8_t *buffer;
+
+	public:
+		PeriodBuffer() = default;
+		PeriodBuffer(const PeriodBuffer &) = delete;
+		PeriodBuffer &operator=(const PeriodBuffer &) = delete;
+
+		void Allocate(size_t n_frames, size_t frame_size) {
+			capacity = n_frames * frame_size;
+
+			/* reserve space for one more (partial) frame,
+			   to be able to fill the buffer with silence,
+			   after moving an unfinished frame to the
+			   end */
+			buffer = new uint8_t[capacity + frame_size - 1];
+			head = tail = 0;
+		}
+
+		void Free() {
+			delete[] buffer;
+		}
+
+		bool IsEmpty() const {
+			return head == tail;
+		}
+
+		bool IsFull() const {
+			return tail >= capacity;
+		}
+
+		uint8_t *GetTail() {
+			return buffer + tail;
+		}
+
+		size_t GetSpaceBytes() const {
+			assert(tail <= capacity);
+
+			return capacity - tail;
+		}
+
+		void AppendBytes(size_t n) {
+			assert(n <= capacity);
+			assert(tail <= capacity - n);
+
+			tail += n;
+		}
+
+		void FillWithSilence(const uint8_t *_silence,
+				     const size_t frame_size) {
+			size_t partial_frame = tail % frame_size;
+			auto *dest = GetTail() - partial_frame;
+
+			/* move the partial frame to the end */
+			std::copy(dest, GetTail(), buffer + capacity);
+
+			size_t silence_size = capacity - tail - partial_frame;
+			std::copy_n(_silence, silence_size, dest);
+
+			tail = capacity + partial_frame;
+		}
+
+		const uint8_t *GetHead() const {
+			return buffer + head;
+		}
+
+		snd_pcm_uframes_t GetFrames(size_t frame_size) const {
+			return (tail - head) / frame_size;
+		}
+
+		void ConsumeBytes(size_t n) {
+			head += n;
+
+			assert(head <= capacity);
+
+			if (head >= capacity) {
+				tail -= head;
+				/* copy the partial frame (if any)
+				   back to the beginning */
+				std::copy_n(GetHead(), tail, buffer);
+				head = 0;
+			}
+		}
+
+		void ConsumeFrames(snd_pcm_uframes_t n, size_t frame_size) {
+			ConsumeBytes(n * frame_size);
+		}
+
+		snd_pcm_uframes_t GetPeriodPosition(size_t frame_size) const {
+			return head / frame_size;
+		}
+
+		void Rewind() {
+			head = 0;
+		}
+
+		void Clear() {
+			head = tail = 0;
+		}
+	};
+
+	PeriodBuffer period_buffer;
+
+	/**
+	 * Protects #cond, #error, #drain.
+	 */
+	mutable Mutex mutex;
+
+	/**
+	 * Used to wait when #ring_buffer is full.  It will be
+	 * signalled each time data is popped from the #ring_buffer,
+	 * making space for more data.
+	 */
+	Cond cond;
+
+	std::exception_ptr error;
+
+public:
+	AlsaOutput(EventLoop &loop, const ConfigBlock &block);
 
 	~AlsaOutput() {
 		/* free libasound's config cache */
@@ -137,60 +288,141 @@ struct AlsaOutput {
 		return device.empty() ? default_device : device.c_str();
 	}
 
-	bool Configure(const ConfigBlock &block, Error &error);
-	static AlsaOutput *Create(const ConfigBlock &block, Error &error);
+	static AlsaOutput *Create(EventLoop &event_loop,
+				  const ConfigBlock &block);
 
-	bool Enable(Error &error);
+	void Enable();
 	void Disable();
 
-	bool Open(AudioFormat &audio_format, Error &error);
+	void Open(AudioFormat &audio_format);
 	void Close();
 
-	size_t Play(const void *chunk, size_t size, Error &error);
+	size_t Play(const void *chunk, size_t size);
 	void Drain();
 	void Cancel();
 
 private:
+	/**
+	 * Set up the snd_pcm_t object which was opened by the caller.
+	 * Set up the configured settings and the audio format.
+	 *
+	 * Throws #std::runtime_error on error.
+	 */
+	void Setup(AudioFormat &audio_format, PcmExport::Params &params);
+
 #ifdef ENABLE_DSD
-	bool SetupDop(AudioFormat audio_format,
-		      PcmExport::Params &params,
-		      Error &error);
+	void SetupDop(AudioFormat audio_format,
+		      PcmExport::Params &params);
 #endif
 
-	bool SetupOrDop(AudioFormat &audio_format, PcmExport::Params &params,
-			Error &error);
+	void SetupOrDop(AudioFormat &audio_format, PcmExport::Params &params);
+
+	/**
+	 * Activate the output by registering the sockets in the
+	 * #EventLoop.  Before calling this, filling the ring buffer
+	 * has no effect; nothing will be played, and no code will be
+	 * run on #EventLoop's thread.
+	 */
+	void Activate() {
+		if (active)
+			return;
+
+		active = true;
+		DeferredMonitor::Schedule();
+	}
+
+	/**
+	 * Wrapper for Activate() which unlocks our mutex.  Call this
+	 * if you're holding the mutex.
+	 */
+	void UnlockActivate() {
+		if (active)
+			return;
+
+		const ScopeUnlock unlock(mutex);
+		Activate();
+	}
+
+	void ClearRingBuffer() {
+		std::array<uint8_t, 1024> buffer;
+		while (ring_buffer->pop(&buffer.front(), buffer.size())) {}
+	}
 
 	int Recover(int err);
 
 	/**
-	 * Write silence to the ALSA device.
+	 * Drain all buffers.  To be run in #EventLoop's thread.
+	 *
+	 * @return true if draining is complete, false if this method
+	 * needs to be called again later
 	 */
-	void WriteSilence(snd_pcm_uframes_t nframes) {
-		snd_pcm_writei(pcm, silence, nframes);
+	bool DrainInternal();
+
+	/**
+	 * Stop playback immediately, dropping all buffers.  To be run
+	 * in #EventLoop's thread.
+	 */
+	void CancelInternal();
+
+	void CopyRingToPeriodBuffer() {
+		if (period_buffer.IsFull())
+			return;
+
+		size_t nbytes = ring_buffer->pop(period_buffer.GetTail(),
+						 period_buffer.GetSpaceBytes());
+		if (nbytes == 0)
+			return;
+
+		period_buffer.AppendBytes(nbytes);
+
+		const std::lock_guard<Mutex> lock(mutex);
+		/* notify the OutputThread that there is now
+		   room in ring_buffer */
+		cond.signal();
 	}
 
+	snd_pcm_sframes_t WriteFromPeriodBuffer() {
+		assert(!period_buffer.IsEmpty());
+
+		auto frames_written = snd_pcm_writei(pcm, period_buffer.GetHead(),
+						     period_buffer.GetFrames(out_frame_size));
+		if (frames_written > 0)
+			period_buffer.ConsumeFrames(frames_written,
+						    out_frame_size);
+
+		return frames_written;
+	}
+
+	bool LockHasError() const {
+		const std::lock_guard<Mutex> lock(mutex);
+		return !!error;
+	}
+
+	/* virtual methods from class DeferredMonitor */
+	virtual void RunDeferred() override {
+		InvalidateSockets();
+	}
+
+	/* virtual methods from class MultiSocketMonitor */
+	virtual std::chrono::steady_clock::duration PrepareSockets() override;
+	virtual void DispatchSockets() override;
 };
 
 static constexpr Domain alsa_output_domain("alsa_output");
 
-inline bool
-AlsaOutput::Configure(const ConfigBlock &block, Error &error)
-{
-	if (!base.Configure(block, error))
-		return false;
-
-	device = block.GetBlockValue("device", "");
-
+AlsaOutput::AlsaOutput(EventLoop &loop, const ConfigBlock &block)
+	:MultiSocketMonitor(loop), DeferredMonitor(loop),
+	 base(alsa_output_plugin, block),
+	 device(block.GetBlockValue("device", "")),
 #ifdef ENABLE_DSD
-	dop = block.GetBlockValue("dop", false) ||
-		/* legacy name from MPD 0.18 and older: */
-		block.GetBlockValue("dsd_usb", false);
+	 dop(block.GetBlockValue("dop", false) ||
+	     /* legacy name from MPD 0.18 and older: */
+	     block.GetBlockValue("dsd_usb", false)),
 #endif
-
-	buffer_time = block.GetBlockValue("buffer_time",
-					  MPD_ALSA_BUFFER_TIME_US);
-	period_time = block.GetBlockValue("period_time", 0u);
-
+	 buffer_time(block.GetBlockValue("buffer_time",
+					 MPD_ALSA_BUFFER_TIME_US)),
+	 period_time(block.GetBlockValue("period_time", 0u))
+{
 #ifdef SND_PCM_NO_AUTO_RESAMPLE
 	if (!block.GetBlockValue("auto_resample", true))
 		mode |= SND_PCM_NO_AUTO_RESAMPLE;
@@ -205,28 +437,18 @@ AlsaOutput::Configure(const ConfigBlock &block, Error &error)
 	if (!block.GetBlockValue("auto_format", true))
 		mode |= SND_PCM_NO_AUTO_FORMAT;
 #endif
-
-	return true;
 }
 
 inline AlsaOutput *
-AlsaOutput::Create(const ConfigBlock &block, Error &error)
+AlsaOutput::Create(EventLoop &event_loop, const ConfigBlock &block)
 {
-	AlsaOutput *ad = new AlsaOutput();
-
-	if (!ad->Configure(block, error)) {
-		delete ad;
-		return nullptr;
-	}
-
-	return ad;
+	return new AlsaOutput(event_loop, block);
 }
 
-inline bool
-AlsaOutput::Enable(gcc_unused Error &error)
+inline void
+AlsaOutput::Enable()
 {
 	pcm_export.Construct();
-	return true;
 }
 
 inline void
@@ -407,7 +629,7 @@ AlsaTryFormatOrByteSwap(snd_pcm_t *pcm, snd_pcm_hw_params_t *hwparams,
 
 /**
  * Attempts to configure the specified sample format.  On DSD_U8
- * failure, attempt to switch to DSD_U32.
+ * failure, attempt to switch to DSD_U32 or DSD_U16.
  */
 static int
 AlsaTryFormatDsd(snd_pcm_t *pcm, snd_pcm_hw_params_t *hwparams,
@@ -416,8 +638,10 @@ AlsaTryFormatDsd(snd_pcm_t *pcm, snd_pcm_hw_params_t *hwparams,
 	int err = AlsaTryFormatOrByteSwap(pcm, hwparams, fmt, params);
 
 #if defined(ENABLE_DSD) && defined(HAVE_ALSA_DSD_U32)
-	if (err == 0)
+	if (err == 0) {
+		params.dsd_u16 = false;
 		params.dsd_u32 = false;
+	}
 
 	if (err == -EINVAL && fmt == SND_PCM_FORMAT_DSD_U8) {
 		/* attempt to switch to DSD_U32 */
@@ -427,6 +651,20 @@ AlsaTryFormatDsd(snd_pcm_t *pcm, snd_pcm_hw_params_t *hwparams,
 		err = AlsaTryFormatOrByteSwap(pcm, hwparams, fmt, params);
 		if (err == 0)
 			params.dsd_u32 = true;
+		else
+			fmt = SND_PCM_FORMAT_DSD_U8;
+	}
+
+	if (err == -EINVAL && fmt == SND_PCM_FORMAT_DSD_U8) {
+		/* attempt to switch to DSD_U16 */
+		fmt = IsLittleEndian()
+			? SND_PCM_FORMAT_DSD_U16_LE
+			: SND_PCM_FORMAT_DSD_U16_BE;
+		err = AlsaTryFormatOrByteSwap(pcm, hwparams, fmt, params);
+		if (err == 0)
+			params.dsd_u16 = true;
+		else
+			fmt = SND_PCM_FORMAT_DSD_U8;
 	}
 #endif
 
@@ -483,73 +721,69 @@ AlsaSetupFormat(snd_pcm_t *pcm, snd_pcm_hw_params_t *hwparams,
 }
 
 /**
- * Set up the snd_pcm_t object which was opened by the caller.  Set up
- * the configured settings and the audio format.
+ * Wrapper for snd_pcm_hw_params().
+ *
+ * @param buffer_time the configured buffer time, or 0 if not configured
+ * @param period_time the configured period time, or 0 if not configured
+ * @param audio_format an #AudioFormat to be configured (or modified)
+ * by this function
+ * @param params to be modified by this function
  */
-static bool
-AlsaSetup(AlsaOutput *ad, AudioFormat &audio_format,
-	  PcmExport::Params &params, Error &error)
+static void
+AlsaSetupHw(snd_pcm_t *pcm, snd_pcm_hw_params_t *hwparams,
+	    unsigned buffer_time, unsigned period_time,
+	    AudioFormat &audio_format, PcmExport::Params &params)
 {
-	unsigned int sample_rate = audio_format.sample_rate;
-	unsigned int channels = audio_format.channels;
 	int err;
-	const char *cmd = nullptr;
 	unsigned retry = MPD_ALSA_RETRY_NR;
-	unsigned int period_time, period_time_ro;
-	unsigned int buffer_time;
+	unsigned int period_time_ro = period_time;
 
-	period_time_ro = period_time = ad->period_time;
 configure_hw:
 	/* configure HW params */
-	snd_pcm_hw_params_t *hwparams;
-	snd_pcm_hw_params_alloca(&hwparams);
-	cmd = "snd_pcm_hw_params_any";
-	err = snd_pcm_hw_params_any(ad->pcm, hwparams);
+	err = snd_pcm_hw_params_any(pcm, hwparams);
 	if (err < 0)
-		goto error;
+		throw FormatRuntimeError("snd_pcm_hw_params_any() failed: %s",
+					 snd_strerror(-err));
 
-	cmd = "snd_pcm_hw_params_set_access";
-	err = snd_pcm_hw_params_set_access(ad->pcm, hwparams,
+	err = snd_pcm_hw_params_set_access(pcm, hwparams,
 					   SND_PCM_ACCESS_RW_INTERLEAVED);
 	if (err < 0)
-		goto error;
+		throw FormatRuntimeError("snd_pcm_hw_params_set_access() failed: %s",
+					 snd_strerror(-err));
 
-	err = AlsaSetupFormat(ad->pcm, hwparams, audio_format, params);
-	if (err < 0) {
-		error.Format(alsa_output_domain, err,
-			     "ALSA device \"%s\" does not support format %s: %s",
-			     ad->GetDevice(),
-			     sample_format_to_string(audio_format.format),
-			     snd_strerror(-err));
-		return false;
-	}
+	err = AlsaSetupFormat(pcm, hwparams, audio_format, params);
+	if (err < 0)
+		throw FormatRuntimeError("Failed to configure format %s: %s",
+					 sample_format_to_string(audio_format.format),
+					 snd_strerror(-err));
 
-	snd_pcm_format_t format;
-	if (snd_pcm_hw_params_get_format(hwparams, &format) == 0)
-		FormatDebug(alsa_output_domain,
-			    "format=%s (%s)", snd_pcm_format_name(format),
-			    snd_pcm_format_description(format));
-
-	err = snd_pcm_hw_params_set_channels_near(ad->pcm, hwparams,
+	unsigned int channels = audio_format.channels;
+	err = snd_pcm_hw_params_set_channels_near(pcm, hwparams,
 						  &channels);
-	if (err < 0) {
-		error.Format(alsa_output_domain, err,
-			     "ALSA device \"%s\" does not support %i channels: %s",
-			     ad->GetDevice(), (int)audio_format.channels,
-			     snd_strerror(-err));
-		return false;
-	}
+	if (err < 0)
+		throw FormatRuntimeError("Failed to configure %i channels: %s",
+					 (int)audio_format.channels,
+					 snd_strerror(-err));
+
 	audio_format.channels = (int8_t)channels;
 
-	err = snd_pcm_hw_params_set_rate_near(ad->pcm, hwparams,
-					      &sample_rate, nullptr);
-	if (err < 0 || sample_rate == 0) {
-		error.Format(alsa_output_domain, err,
-			     "ALSA device \"%s\" does not support %u Hz audio",
-			     ad->GetDevice(), audio_format.sample_rate);
-		return false;
-	}
-	audio_format.sample_rate = sample_rate;
+	const unsigned requested_sample_rate =
+		params.CalcOutputSampleRate(audio_format.sample_rate);
+	unsigned output_sample_rate = requested_sample_rate;
+
+	err = snd_pcm_hw_params_set_rate_near(pcm, hwparams,
+					      &output_sample_rate, nullptr);
+	if (err < 0)
+		throw FormatRuntimeError("Failed to configure sample rate %u Hz: %s",
+					 requested_sample_rate,
+					 snd_strerror(-err));
+
+	if (output_sample_rate == 0)
+		throw FormatRuntimeError("Failed to configure sample rate %u Hz",
+					 audio_format.sample_rate);
+
+	if (output_sample_rate != requested_sample_rate)
+		audio_format.sample_rate = params.CalcInputSampleRate(output_sample_rate);
 
 	snd_pcm_uframes_t buffer_size_min, buffer_size_max;
 	snd_pcm_hw_params_get_buffer_size_min(hwparams, &buffer_size_min);
@@ -571,13 +805,12 @@ configure_hw:
 		    (unsigned)period_size_min, (unsigned)period_size_max,
 		    period_time_min, period_time_max);
 
-	if (ad->buffer_time > 0) {
-		buffer_time = ad->buffer_time;
-		cmd = "snd_pcm_hw_params_set_buffer_time_near";
-		err = snd_pcm_hw_params_set_buffer_time_near(ad->pcm, hwparams,
+	if (buffer_time > 0) {
+		err = snd_pcm_hw_params_set_buffer_time_near(pcm, hwparams,
 							     &buffer_time, nullptr);
 		if (err < 0)
-			goto error;
+			throw FormatRuntimeError("snd_pcm_hw_params_set_buffer_time_near() failed: %s",
+						 snd_strerror(-err));
 	} else {
 		err = snd_pcm_hw_params_get_buffer_time(hwparams, &buffer_time,
 							nullptr);
@@ -595,63 +828,89 @@ configure_hw:
 
 	if (period_time_ro > 0) {
 		period_time = period_time_ro;
-		cmd = "snd_pcm_hw_params_set_period_time_near";
-		err = snd_pcm_hw_params_set_period_time_near(ad->pcm, hwparams,
+		err = snd_pcm_hw_params_set_period_time_near(pcm, hwparams,
 							     &period_time, nullptr);
 		if (err < 0)
-			goto error;
+			throw FormatRuntimeError("snd_pcm_hw_params_set_period_time_near() failed: %s",
+						 snd_strerror(-err));
 	}
 
-	cmd = "snd_pcm_hw_params";
-	err = snd_pcm_hw_params(ad->pcm, hwparams);
+	err = snd_pcm_hw_params(pcm, hwparams);
 	if (err == -EPIPE && --retry > 0 && period_time_ro > 0) {
 		period_time_ro = period_time_ro >> 1;
 		goto configure_hw;
 	} else if (err < 0)
-		goto error;
+		throw FormatRuntimeError("snd_pcm_hw_params() failed: %s",
+					 snd_strerror(-err));
 	if (retry != MPD_ALSA_RETRY_NR)
 		FormatDebug(alsa_output_domain,
 			    "ALSA period_time set to %d", period_time);
+}
 
-	snd_pcm_uframes_t alsa_buffer_size;
-	cmd = "snd_pcm_hw_params_get_buffer_size";
-	err = snd_pcm_hw_params_get_buffer_size(hwparams, &alsa_buffer_size);
-	if (err < 0)
-		goto error;
-
-	snd_pcm_uframes_t alsa_period_size;
-	cmd = "snd_pcm_hw_params_get_period_size";
-	err = snd_pcm_hw_params_get_period_size(hwparams, &alsa_period_size,
-						nullptr);
-	if (err < 0)
-		goto error;
-
-	/* configure SW params */
+/**
+ * Wrapper for snd_pcm_sw_params().
+ */
+static void
+AlsaSetupSw(snd_pcm_t *pcm, snd_pcm_uframes_t start_threshold,
+	    snd_pcm_uframes_t avail_min)
+{
 	snd_pcm_sw_params_t *swparams;
 	snd_pcm_sw_params_alloca(&swparams);
 
-	cmd = "snd_pcm_sw_params_current";
-	err = snd_pcm_sw_params_current(ad->pcm, swparams);
+	int err = snd_pcm_sw_params_current(pcm, swparams);
 	if (err < 0)
-		goto error;
+		throw FormatRuntimeError("snd_pcm_sw_params_current() failed: %s",
+					 snd_strerror(-err));
 
-	cmd = "snd_pcm_sw_params_set_start_threshold";
-	err = snd_pcm_sw_params_set_start_threshold(ad->pcm, swparams,
-						    alsa_buffer_size -
-						    alsa_period_size);
+	err = snd_pcm_sw_params_set_start_threshold(pcm, swparams,
+						    start_threshold);
 	if (err < 0)
-		goto error;
+		throw FormatRuntimeError("snd_pcm_sw_params_set_start_threshold() failed: %s",
+					 snd_strerror(-err));
 
-	cmd = "snd_pcm_sw_params_set_avail_min";
-	err = snd_pcm_sw_params_set_avail_min(ad->pcm, swparams,
-					      alsa_period_size);
+	err = snd_pcm_sw_params_set_avail_min(pcm, swparams, avail_min);
 	if (err < 0)
-		goto error;
+		throw FormatRuntimeError("snd_pcm_sw_params_set_avail_min() failed: %s",
+					 snd_strerror(-err));
 
-	cmd = "snd_pcm_sw_params";
-	err = snd_pcm_sw_params(ad->pcm, swparams);
+	err = snd_pcm_sw_params(pcm, swparams);
 	if (err < 0)
-		goto error;
+		throw FormatRuntimeError("snd_pcm_sw_params() failed: %s",
+					 snd_strerror(-err));
+}
+
+inline void
+AlsaOutput::Setup(AudioFormat &audio_format,
+		  PcmExport::Params &params)
+{
+	snd_pcm_hw_params_t *hwparams;
+	snd_pcm_hw_params_alloca(&hwparams);
+
+	AlsaSetupHw(pcm, hwparams,
+		    buffer_time, period_time,
+		    audio_format, params);
+
+	snd_pcm_format_t format;
+	if (snd_pcm_hw_params_get_format(hwparams, &format) == 0)
+		FormatDebug(alsa_output_domain,
+			    "format=%s (%s)", snd_pcm_format_name(format),
+			    snd_pcm_format_description(format));
+
+	snd_pcm_uframes_t alsa_buffer_size;
+	int err = snd_pcm_hw_params_get_buffer_size(hwparams, &alsa_buffer_size);
+	if (err < 0)
+		throw FormatRuntimeError("snd_pcm_hw_params_get_buffer_size() failed: %s",
+					 snd_strerror(-err));
+
+	snd_pcm_uframes_t alsa_period_size;
+	err = snd_pcm_hw_params_get_period_size(hwparams, &alsa_period_size,
+						nullptr);
+	if (err < 0)
+		throw FormatRuntimeError("snd_pcm_hw_params_get_period_size() failed: %s",
+					 snd_strerror(-err));
+
+	AlsaSetupSw(pcm, alsa_buffer_size - alsa_period_size,
+		    alsa_period_size);
 
 	FormatDebug(alsa_output_domain, "buffer_size=%u period_size=%u",
 		    (unsigned)alsa_buffer_size, (unsigned)alsa_period_size);
@@ -664,29 +923,19 @@ configure_hw:
 		   happen again. */
 		alsa_period_size = 1;
 
-	ad->period_frames = alsa_period_size;
-	ad->period_position = 0;
+	period_frames = alsa_period_size;
 
-	ad->silence = new uint8_t[snd_pcm_frames_to_bytes(ad->pcm,
-							  alsa_period_size)];
-	snd_pcm_format_set_silence(format, ad->silence,
-				   alsa_period_size * channels);
+	silence = new uint8_t[snd_pcm_frames_to_bytes(pcm, alsa_period_size)];
+	snd_pcm_format_set_silence(format, silence,
+				   alsa_period_size * audio_format.channels);
 
-	return true;
-
-error:
-	error.Format(alsa_output_domain, err,
-		     "Error opening ALSA device \"%s\" (%s): %s",
-		     ad->GetDevice(), cmd, snd_strerror(-err));
-	return false;
 }
 
 #ifdef ENABLE_DSD
 
-inline bool
+inline void
 AlsaOutput::SetupDop(const AudioFormat audio_format,
-		     PcmExport::Params &params,
-		     Error &error)
+		     PcmExport::Params &params)
 {
 	assert(dop);
 	assert(audio_format.format == SampleFormat::DSD);
@@ -695,12 +944,10 @@ AlsaOutput::SetupDop(const AudioFormat audio_format,
 
 	AudioFormat dop_format = audio_format;
 	dop_format.format = SampleFormat::S24_P32;
-	dop_format.sample_rate /= 2;
 
 	const AudioFormat check = dop_format;
 
-	if (!AlsaSetup(this, dop_format, params, error))
-		return false;
+	Setup(dop_format, params);
 
 	/* if the device allows only 32 bit, shift all DoP
 	   samples left by 8 bit and leave the lower 8 bit cleared;
@@ -714,55 +961,66 @@ AlsaOutput::SetupDop(const AudioFormat audio_format,
 	if (dop_format != check) {
 		/* no bit-perfect playback, which is required
 		   for DSD over USB */
-		error.Format(alsa_output_domain,
-			     "Failed to configure DSD-over-PCM on ALSA device \"%s\"",
-			     GetDevice());
 		delete[] silence;
-		return false;
+		throw std::runtime_error("Failed to configure DSD-over-PCM");
 	}
-
-	return true;
 }
 
 #endif
 
-inline bool
-AlsaOutput::SetupOrDop(AudioFormat &audio_format, PcmExport::Params &params,
-		       Error &error)
+inline void
+AlsaOutput::SetupOrDop(AudioFormat &audio_format, PcmExport::Params &params)
 {
 #ifdef ENABLE_DSD
-	Error dop_error;
-	if (dop && audio_format.format == SampleFormat::DSD &&
-	    SetupDop(audio_format, params, dop_error)) {
-		params.dop = true;
-		return true;
+	std::exception_ptr dop_error;
+	if (dop && audio_format.format == SampleFormat::DSD) {
+		try {
+			params.dop = true;
+			SetupDop(audio_format, params);
+			return;
+		} catch (...) {
+			dop_error = std::current_exception();
+			params.dop = false;
+		}
+	}
+
+	try {
+#endif
+		Setup(audio_format, params);
+#ifdef ENABLE_DSD
+	} catch (...) {
+		if (dop_error)
+			/* if DoP was attempted, prefer returning the
+			   original DoP error instead of the fallback
+			   error */
+			std::rethrow_exception(dop_error);
+		else
+			throw;
 	}
 #endif
-
-	if (AlsaSetup(this, audio_format, params, error))
-		return true;
-
-#ifdef ENABLE_DSD
-	if (dop_error.IsDefined())
-		/* if DoP was attempted, prefer returning the original
-		   DoP error instead of the fallback error */
-		error = std::move(dop_error);
-#endif
-
-	return false;
 }
 
-inline bool
-AlsaOutput::Open(AudioFormat &audio_format, Error &error)
+static constexpr bool
+MaybeDmix(snd_pcm_type_t type)
+{
+	return type == SND_PCM_TYPE_DMIX || type == SND_PCM_TYPE_PLUG;
+}
+
+gcc_pure
+static bool
+MaybeDmix(snd_pcm_t *pcm)
+{
+	return MaybeDmix(snd_pcm_type(pcm));
+}
+
+inline void
+AlsaOutput::Open(AudioFormat &audio_format)
 {
 	int err = snd_pcm_open(&pcm, GetDevice(),
 			       SND_PCM_STREAM_PLAYBACK, mode);
-	if (err < 0) {
-		error.Format(alsa_output_domain, err,
-			    "Failed to open ALSA device \"%s\": %s",
-			    GetDevice(), snd_strerror(err));
-		return false;
-	}
+	if (err < 0)
+		throw FormatRuntimeError("Failed to open ALSA device \"%s\": %s",
+					 GetDevice(), snd_strerror(err));
 
 	FormatDebug(alsa_output_domain, "opened %s type=%s",
 		    snd_pcm_name(pcm),
@@ -771,10 +1029,23 @@ AlsaOutput::Open(AudioFormat &audio_format, Error &error)
 	PcmExport::Params params;
 	params.alsa_channel_order = true;
 
-	if (!SetupOrDop(audio_format, params, error)) {
+	try {
+		SetupOrDop(audio_format, params);
+	} catch (...) {
 		snd_pcm_close(pcm);
-		return false;
+		std::throw_with_nested(FormatRuntimeError("Error opening ALSA device \"%s\"",
+							  GetDevice()));
 	}
+
+	work_around_drain_bug = MaybeDmix(pcm) &&
+		GetRuntimeAlsaVersion() < MakeAlsaVersion(1, 1, 4);
+
+	snd_pcm_nonblock(pcm, 1);
+
+#ifdef ENABLE_DSD
+	if (params.dop)
+		FormatDebug(alsa_output_domain, "DoP (DSD over PCM) enabled");
+#endif
 
 	pcm_export->Open(audio_format.format,
 			 audio_format.channels,
@@ -783,9 +1054,18 @@ AlsaOutput::Open(AudioFormat &audio_format, Error &error)
 	in_frame_size = audio_format.GetFrameSize();
 	out_frame_size = pcm_export->GetFrameSize(audio_format);
 
-	must_prepare = false;
+	drain = false;
 
-	return true;
+	size_t period_size = period_frames * out_frame_size;
+	ring_buffer = new boost::lockfree::spsc_queue<uint8_t>(period_size * 4);
+
+	/* reserve space for one more (partial) frame, to be able to
+	   fill the buffer with silence, after moving an unfinished
+	   frame to the end */
+	period_buffer.Allocate(period_frames, out_frame_size);
+
+	active = false;
+	must_prepare = false;
 }
 
 inline int
@@ -810,75 +1090,136 @@ AlsaOutput::Recover(int err)
 		if (err == -EAGAIN)
 			return 0;
 		/* fall-through to snd_pcm_prepare: */
+#if GCC_CHECK_VERSION(7,0)
+		[[fallthrough]];
+#endif
+	case SND_PCM_STATE_OPEN:
 	case SND_PCM_STATE_SETUP:
 	case SND_PCM_STATE_XRUN:
-		period_position = 0;
+		period_buffer.Rewind();
 		err = snd_pcm_prepare(pcm);
 		break;
 	case SND_PCM_STATE_DISCONNECTED:
 		break;
 	/* this is no error, so just keep running */
+	case SND_PCM_STATE_PREPARED:
 	case SND_PCM_STATE_RUNNING:
+	case SND_PCM_STATE_DRAINING:
 		err = 0;
-		break;
-	default:
-		/* unknown state, do nothing */
 		break;
 	}
 
 	return err;
 }
 
+inline bool
+AlsaOutput::DrainInternal()
+{
+	if (snd_pcm_state(pcm) != SND_PCM_STATE_RUNNING) {
+		CancelInternal();
+		return true;
+	}
+
+	/* drain ring_buffer */
+	CopyRingToPeriodBuffer();
+
+	auto period_position = period_buffer.GetPeriodPosition(out_frame_size);
+	if (period_position > 0)
+		/* generate some silence to finish the partial
+		   period */
+		period_buffer.FillWithSilence(silence, out_frame_size);
+
+	/* drain period_buffer */
+	if (!period_buffer.IsEmpty()) {
+		auto frames_written = WriteFromPeriodBuffer();
+		if (frames_written < 0 && errno != EAGAIN) {
+			CancelInternal();
+			return true;
+		}
+
+		if (!period_buffer.IsEmpty())
+			/* need to call WriteFromPeriodBuffer() again
+			   in the next iteration, so don't finish the
+			   drain just yet */
+			return false;
+	}
+
+	/* .. and finally drain the ALSA hardware buffer */
+
+	if (work_around_drain_bug) {
+		snd_pcm_nonblock(pcm, 0);
+		bool result = snd_pcm_drain(pcm) != -EAGAIN;
+		snd_pcm_nonblock(pcm, 1);
+		return result;
+	}
+
+	return snd_pcm_drain(pcm) != -EAGAIN;
+}
+
 inline void
 AlsaOutput::Drain()
 {
-	if (snd_pcm_state(pcm) != SND_PCM_STATE_RUNNING)
-		return;
+	const std::lock_guard<Mutex> lock(mutex);
 
-	if (period_position > 0) {
-		/* generate some silence to finish the partial
-		   period */
-		snd_pcm_uframes_t nframes =
-			period_frames - period_position;
-		WriteSilence(nframes);
-	}
+	drain = true;
 
-	snd_pcm_drain(pcm);
+	UnlockActivate();
 
-	period_position = 0;
+	while (drain && !error)
+		cond.wait(mutex);
+}
+
+inline void
+AlsaOutput::CancelInternal()
+{
+	must_prepare = true;
+
+	snd_pcm_drop(pcm);
+
+	pcm_export->Reset();
+	period_buffer.Clear();
+	ClearRingBuffer();
 }
 
 inline void
 AlsaOutput::Cancel()
 {
-	period_position = 0;
-	must_prepare = true;
+	if (!active) {
+		/* early cancel, quick code path without thread
+		   synchronization */
 
-	snd_pcm_drop(pcm);
+		pcm_export->Reset();
+		assert(period_buffer.IsEmpty());
+		ClearRingBuffer();
+
+		return;
+	}
+
+	BlockingCall(MultiSocketMonitor::GetEventLoop(), [this](){
+			CancelInternal();
+		});
 }
 
 inline void
 AlsaOutput::Close()
 {
+	/* make sure the I/O thread isn't inside DispatchSockets() */
+	BlockingCall(MultiSocketMonitor::GetEventLoop(), [this](){
+			MultiSocketMonitor::Reset();
+			DeferredMonitor::Cancel();
+		});
+
+	period_buffer.Free();
+	delete ring_buffer;
 	snd_pcm_close(pcm);
 	delete[] silence;
 }
 
 inline size_t
-AlsaOutput::Play(const void *chunk, size_t size, Error &error)
+AlsaOutput::Play(const void *chunk, size_t size)
 {
 	assert(size > 0);
 	assert(size % in_frame_size == 0);
-
-	if (must_prepare) {
-		must_prepare = false;
-
-		int err = snd_pcm_prepare(pcm);
-		if (err < 0) {
-			error.Set(alsa_output_domain, err, snd_strerror(-err));
-			return 0;
-		}
-	}
 
 	const auto e = pcm_export->Export({chunk, size});
 	if (e.size == 0)
@@ -890,30 +1231,102 @@ AlsaOutput::Play(const void *chunk, size_t size, Error &error)
 		   been played */
 		return size;
 
-	chunk = e.data;
-	size = e.size;
-
-	assert(size % out_frame_size == 0);
-
-	size /= out_frame_size;
-	assert(size > 0);
+	const std::lock_guard<Mutex> lock(mutex);
 
 	while (true) {
-		snd_pcm_sframes_t ret = snd_pcm_writei(pcm, chunk, size);
-		if (ret > 0) {
-			period_position = (period_position + ret)
-				% period_frames;
+		if (error)
+			std::rethrow_exception(error);
 
-			size_t bytes_written = ret * out_frame_size;
+		size_t bytes_written = ring_buffer->push((const uint8_t *)e.data,
+							 e.size);
+		if (bytes_written > 0)
 			return pcm_export->CalcSourceSize(bytes_written);
-		}
 
-		if (ret < 0 && ret != -EAGAIN && ret != -EINTR &&
-		    Recover(ret) < 0) {
-			error.Set(alsa_output_domain, ret, snd_strerror(-ret));
-			return 0;
+		/* now that the ring_buffer is full, we can activate
+		   the socket handlers to trigger the first
+		   snd_pcm_writei() */
+		UnlockActivate();
+
+		/* check the error again, because a new one may have
+		   been set while our mutex was unlocked in
+		   UnlockActivate() */
+		if (error)
+			std::rethrow_exception(error);
+
+		/* wait for the DispatchSockets() to make room in the
+		   ring_buffer */
+		cond.wait(mutex);
+	}
+}
+
+std::chrono::steady_clock::duration
+AlsaOutput::PrepareSockets()
+{
+	if (LockHasError()) {
+		ClearSocketList();
+		return std::chrono::steady_clock::duration(-1);
+	}
+
+	return PrepareAlsaPcmSockets(*this, pcm, pfd_buffer);
+}
+
+void
+AlsaOutput::DispatchSockets()
+try {
+	{
+		const std::lock_guard<Mutex> lock(mutex);
+		if (drain) {
+			{
+				ScopeUnlock unlock(mutex);
+				if (!DrainInternal())
+					return;
+
+				MultiSocketMonitor::InvalidateSockets();
+			}
+
+			drain = false;
+			cond.signal();
+			return;
 		}
 	}
+
+	if (must_prepare) {
+		must_prepare = false;
+
+		int err = snd_pcm_prepare(pcm);
+		if (err < 0)
+			throw FormatRuntimeError("snd_pcm_prepare() failed: %s",
+						 snd_strerror(-err));
+	}
+
+	CopyRingToPeriodBuffer();
+
+	if (period_buffer.IsEmpty())
+		/* insert some silence if the buffer has not enough
+		   data yet, to avoid ALSA xrun */
+		period_buffer.FillWithSilence(silence, out_frame_size);
+
+	auto frames_written = WriteFromPeriodBuffer();
+	if (frames_written < 0) {
+		if (frames_written == -EAGAIN || frames_written == -EINTR)
+			/* try again in the next DispatchSockets()
+			   call which is still scheduled */
+			return;
+
+		if (Recover(frames_written) < 0)
+			throw FormatRuntimeError("snd_pcm_writei() failed: %s",
+						 snd_strerror(-frames_written));
+
+		/* recovered; try again in the next DispatchSockets()
+		   call */
+		return;
+	}
+} catch (const std::runtime_error &) {
+	MultiSocketMonitor::Reset();
+
+	const std::lock_guard<Mutex> lock(mutex);
+	error = std::current_exception();
+	cond.signal();
 }
 
 typedef AudioOutputWrapper<AlsaOutput> Wrapper;

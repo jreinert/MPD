@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -21,16 +21,12 @@
 #include "NfsInputPlugin.hxx"
 #include "../AsyncInputStream.hxx"
 #include "../InputPlugin.hxx"
-#include "lib/nfs/Domain.hxx"
 #include "lib/nfs/Glue.hxx"
 #include "lib/nfs/FileReader.hxx"
-#include "util/HugeAllocator.hxx"
+#include "thread/Cond.hxx"
 #include "util/StringCompare.hxx"
-#include "util/Error.hxx"
 
 #include <string.h>
-#include <sys/stat.h>
-#include <fcntl.h>
 
 /**
  * Do not buffer more than this number of bytes.  It should be a
@@ -44,32 +40,30 @@ static const size_t NFS_MAX_BUFFERED = 512 * 1024;
  */
 static const size_t NFS_RESUME_AT = 384 * 1024;
 
-class NfsInputStream final : public AsyncInputStream, NfsFileReader {
+class NfsInputStream final : NfsFileReader, public AsyncInputStream {
 	uint64_t next_offset;
 
-	bool reconnect_on_resume, reconnecting;
+	bool reconnect_on_resume = false, reconnecting = false;
 
 public:
-	NfsInputStream(const char *_uri,
-		       Mutex &_mutex, Cond &_cond,
-		       void *_buffer)
-		:AsyncInputStream(_uri, _mutex, _cond,
-				  _buffer, NFS_MAX_BUFFERED,
-				  NFS_RESUME_AT),
-		 reconnect_on_resume(false), reconnecting(false) {}
+	NfsInputStream(const char *_uri, Mutex &_mutex, Cond &_cond)
+		:AsyncInputStream(NfsFileReader::GetEventLoop(),
+				  _uri, _mutex, _cond,
+				  NFS_MAX_BUFFERED,
+				  NFS_RESUME_AT) {}
 
 	virtual ~NfsInputStream() {
 		DeferClose();
 	}
 
-	bool Open(Error &error) {
+	void Open() {
 		assert(!IsReady());
 
-		return NfsFileReader::Open(GetURI(), error);
+		NfsFileReader::Open(GetURI());
 	}
 
 private:
-	bool DoRead();
+	void DoRead();
 
 protected:
 	/* virtual methods from AsyncInputStream */
@@ -80,38 +74,34 @@ private:
 	/* virtual methods from NfsFileReader */
 	void OnNfsFileOpen(uint64_t size) override;
 	void OnNfsFileRead(const void *data, size_t size) override;
-	void OnNfsFileError(Error &&error) override;
+	void OnNfsFileError(std::exception_ptr &&e) override;
 };
 
-bool
+void
 NfsInputStream::DoRead()
 {
 	assert(NfsFileReader::IsIdle());
 
 	int64_t remaining = size - next_offset;
 	if (remaining <= 0)
-		return true;
+		return;
 
 	const size_t buffer_space = GetBufferSpace();
 	if (buffer_space == 0) {
 		Pause();
-		return true;
+		return;
 	}
 
 	size_t nbytes = std::min<size_t>(std::min<uint64_t>(remaining, 32768),
 					 buffer_space);
 
-	mutex.unlock();
-	Error error;
-	bool success = NfsFileReader::Read(next_offset, nbytes, error);
-	mutex.lock();
-
-	if (!success) {
-		PostponeError(std::move(error));
-		return false;
+	try {
+		const ScopeUnlock unlock(mutex);
+		NfsFileReader::Read(next_offset, nbytes);
+	} catch (...) {
+		postponed_exception = std::current_exception();
+		cond.broadcast();
 	}
-
-	return true;
 }
 
 void
@@ -124,17 +114,10 @@ NfsInputStream::DoResume()
 		reconnect_on_resume = false;
 		reconnecting = true;
 
-		mutex.unlock();
+		ScopeUnlock unlock(mutex);
+
 		NfsFileReader::Close();
-
-		Error error;
-		bool success = NfsFileReader::Open(GetURI(), error);
-		mutex.lock();
-
-		if (!success) {
-			postponed_error = std::move(error);
-			cond.broadcast();
-		}
+		NfsFileReader::Open(GetURI());
 
 		return;
 	}
@@ -147,9 +130,10 @@ NfsInputStream::DoResume()
 void
 NfsInputStream::DoSeek(offset_type new_offset)
 {
-	mutex.unlock();
-	NfsFileReader::CancelRead();
-	mutex.lock();
+	{
+		const ScopeUnlock unlock(mutex);
+		NfsFileReader::CancelRead();
+	}
 
 	next_offset = offset = new_offset;
 	SeekDone();
@@ -159,7 +143,7 @@ NfsInputStream::DoSeek(offset_type new_offset)
 void
 NfsInputStream::OnNfsFileOpen(uint64_t _size)
 {
-	const ScopeLock protect(mutex);
+	const std::lock_guard<Mutex> protect(mutex);
 
 	if (reconnecting) {
 		/* reconnect has succeeded */
@@ -179,7 +163,7 @@ NfsInputStream::OnNfsFileOpen(uint64_t _size)
 void
 NfsInputStream::OnNfsFileRead(const void *data, size_t data_size)
 {
-	const ScopeLock protect(mutex);
+	const std::lock_guard<Mutex> protect(mutex);
 	assert(!IsBufferFull());
 	assert(IsBufferFull() == (GetBufferSpace() == 0));
 	AppendToBuffer(data, data_size);
@@ -190,9 +174,9 @@ NfsInputStream::OnNfsFileRead(const void *data, size_t data_size)
 }
 
 void
-NfsInputStream::OnNfsFileError(Error &&error)
+NfsInputStream::OnNfsFileError(std::exception_ptr &&e)
 {
-	const ScopeLock protect(mutex);
+	const std::lock_guard<Mutex> protect(mutex);
 
 	if (IsPaused()) {
 		/* while we're paused, don't report this error to the
@@ -205,7 +189,7 @@ NfsInputStream::OnNfsFileError(Error &&error)
 		return;
 	}
 
-	postponed_error = std::move(error);
+	postponed_exception = std::move(e);
 
 	if (IsSeekPending())
 		SeekDone();
@@ -220,11 +204,10 @@ NfsInputStream::OnNfsFileError(Error &&error)
  *
  */
 
-static InputPlugin::InitResult
-input_nfs_init(const ConfigBlock &, Error &)
+static void
+input_nfs_init(EventLoop &event_loop, const ConfigBlock &)
 {
-	nfs_init();
-	return InputPlugin::InitResult::SUCCESS;
+	nfs_init(event_loop);
 }
 
 static void
@@ -235,22 +218,17 @@ input_nfs_finish()
 
 static InputStream *
 input_nfs_open(const char *uri,
-	       Mutex &mutex, Cond &cond,
-	       Error &error)
+	       Mutex &mutex, Cond &cond)
 {
 	if (!StringStartsWith(uri, "nfs://"))
 		return nullptr;
 
-	void *buffer = HugeAllocate(NFS_MAX_BUFFERED);
-	if (buffer == nullptr) {
-		error.Set(nfs_domain, "Out of memory");
-		return nullptr;
-	}
-
-	NfsInputStream *is = new NfsInputStream(uri, mutex, cond, buffer);
-	if (!is->Open(error)) {
+	NfsInputStream *is = new NfsInputStream(uri, mutex, cond);
+	try {
+		is->Open();
+	} catch (...) {
 		delete is;
-		return nullptr;
+		throw;
 	}
 
 	return is;

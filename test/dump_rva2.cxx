@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -19,12 +19,11 @@
 
 #include "config.h"
 #include "tag/Id3Load.hxx"
-#include "tag/TagRva2.hxx"
+#include "tag/Rva2.hxx"
 #include "ReplayGainInfo.hxx"
 #include "config/ConfigGlobal.hxx"
 #include "thread/Mutex.hxx"
 #include "thread/Cond.hxx"
-#include "util/Error.hxx"
 #include "fs/Path.hxx"
 #include "input/InputStream.hxx"
 #include "input/LocalOpen.hxx"
@@ -46,8 +45,23 @@ config_get_string(gcc_unused enum ConfigOption option,
 	return default_value;
 }
 
-int main(int argc, char **argv)
+static void
+DumpReplayGainTuple(const char *name, const ReplayGainTuple &tuple)
 {
+	if (tuple.IsDefined())
+		fprintf(stderr, "replay_gain[%s]: gain=%f peak=%f\n",
+			name, tuple.gain, tuple.peak);
+}
+
+static void
+DumpReplayGainInfo(const ReplayGainInfo &info)
+{
+	DumpReplayGainTuple("album", info.album);
+	DumpReplayGainTuple("track", info.track);
+}
+
+int main(int argc, char **argv)
+try {
 #ifdef HAVE_LOCALE_H
 	/* initialize locale */
 	setlocale(LC_CTYPE,"");
@@ -63,12 +77,7 @@ int main(int argc, char **argv)
 	Mutex mutex;
 	Cond cond;
 
-	Error error;
-	auto is = OpenLocalInputStream(path, mutex, cond, error);
-	if (!is) {
-		LogError(error);
-		return EXIT_FAILURE;
-	}
+	auto is = OpenLocalInputStream(path, mutex, cond);
 
 	const auto tag = tag_id3_load(*is);
 	if (tag == NULL) {
@@ -85,15 +94,10 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 
-	const ReplayGainTuple *tuple = &replay_gain.tuples[REPLAY_GAIN_ALBUM];
-	if (tuple->IsDefined())
-		fprintf(stderr, "replay_gain[album]: gain=%f peak=%f\n",
-			tuple->gain, tuple->peak);
-
-	tuple = &replay_gain.tuples[REPLAY_GAIN_TRACK];
-	if (tuple->IsDefined())
-		fprintf(stderr, "replay_gain[track]: gain=%f peak=%f\n",
-			tuple->gain, tuple->peak);
+	DumpReplayGainInfo(replay_gain);
 
 	return EXIT_SUCCESS;
+} catch (const std::exception &e) {
+	LogError(e);
+	return EXIT_FAILURE;
 }

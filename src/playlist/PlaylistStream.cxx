@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -21,7 +21,6 @@
 #include "PlaylistStream.hxx"
 #include "PlaylistRegistry.hxx"
 #include "util/UriUtil.hxx"
-#include "util/Error.hxx"
 #include "input/InputStream.hxx"
 #include "input/LocalOpen.hxx"
 #include "fs/Path.hxx"
@@ -44,13 +43,7 @@ try {
 	if (!playlist_suffix_supported(suffix_utf8.c_str()))
 		return nullptr;
 
-	Error error;
-	auto is = OpenLocalInputStream(path, mutex, cond, error);
-	if (is == nullptr) {
-		LogError(error);
-		return nullptr;
-	}
-
+	auto is = OpenLocalInputStream(path, mutex, cond);
 	return playlist_list_open_stream_suffix(std::move(is),
 						suffix_utf8.c_str());
 } catch (const std::runtime_error &e) {
@@ -85,15 +78,7 @@ try {
 	if (playlist != nullptr)
 		return playlist;
 
-	Error error;
-	auto is = InputStream::OpenReady(uri, mutex, cond, error);
-	if (is == nullptr) {
-		if (error.IsDefined())
-			FormatError(error, "Failed to open %s", uri);
-
-		return nullptr;
-	}
-
+	auto is = InputStream::OpenReady(uri, mutex, cond);
 	return playlist_list_open_stream(std::move(is), uri);
 } catch (const std::runtime_error &e) {
 	LogError(e);

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -39,7 +39,7 @@ class AllocatedPath;
 class Path : public PathTraitsFS::Pointer {
 	typedef PathTraitsFS::Pointer Base;
 
-	constexpr Path(const_pointer _value):Base(_value) {}
+	constexpr Path(const_pointer_type _value):Base(_value) {}
 
 public:
 	/**
@@ -61,7 +61,7 @@ public:
 	 * Create a new instance pointing to the specified path
 	 * string.
 	 */
-	static constexpr Path FromFS(const_pointer fs) {
+	static constexpr Path FromFS(const_pointer_type fs) {
 		return Path(fs);
 	}
 
@@ -104,7 +104,7 @@ public:
 	 * instance ends.
 	 */
 	gcc_pure
-	const_pointer c_str() const {
+	const_pointer_type c_str() const {
 		return Base::c_str();
 	}
 
@@ -113,7 +113,7 @@ public:
 	 * null-terminated.
 	 */
 	gcc_pure
-	const_pointer data() const {
+	const_pointer_type data() const {
 		return c_str();
 	}
 
@@ -158,7 +158,7 @@ public:
 	 * nullptr on mismatch.
 	 */
 	gcc_pure
-	const_pointer Relative(Path other_fs) const {
+	const_pointer_type Relative(Path other_fs) const {
 		return PathTraitsFS::Relative(c_str(), other_fs.c_str());
 	}
 
@@ -168,7 +168,7 @@ public:
 	}
 
 	gcc_pure
-	const_pointer GetSuffix() const;
+	const_pointer_type GetSuffix() const;
 };
 
 #endif

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -28,25 +28,21 @@ class NullOutput {
 
 	AudioOutput base;
 
-	bool sync;
+	const bool sync;
 
 	Timer *timer;
 
 public:
-	NullOutput()
-		:base(null_output_plugin) {}
+	NullOutput(const ConfigBlock &block)
+		:base(null_output_plugin, block),
+		 sync(block.GetBlockValue("sync", true)) {}
 
-	bool Initialize(const ConfigBlock &block, Error &error) {
-		return base.Configure(block, error);
-	}
+	static NullOutput *Create(EventLoop &event_loop,
+				  const ConfigBlock &block);
 
-	static NullOutput *Create(const ConfigBlock &block, Error &error);
-
-	bool Open(AudioFormat &audio_format, gcc_unused Error &error) {
+	void Open(AudioFormat &audio_format) {
 		if (sync)
 			timer = new Timer(audio_format);
-
-		return true;
 	}
 
 	void Close() {
@@ -54,14 +50,13 @@ public:
 			delete timer;
 	}
 
-	unsigned Delay() const {
+	std::chrono::steady_clock::duration Delay() const {
 		return sync && timer->IsStarted()
 			? timer->GetDelay()
-			: 0;
+			: std::chrono::steady_clock::duration::zero();
 	}
 
-	size_t Play(gcc_unused const void *chunk, size_t size,
-		    gcc_unused Error &error) {
+	size_t Play(gcc_unused const void *chunk, size_t size) {
 		if (sync) {
 			if (!timer->IsStarted())
 				timer->Start();
@@ -78,18 +73,9 @@ public:
 };
 
 inline NullOutput *
-NullOutput::Create(const ConfigBlock &block, Error &error)
+NullOutput::Create(EventLoop &, const ConfigBlock &block)
 {
-	NullOutput *nd = new NullOutput();
-
-	if (!nd->Initialize(block, error)) {
-		delete nd;
-		return nullptr;
-	}
-
-	nd->sync = block.GetBlockValue("sync", true);
-
-	return nd;
+	return new NullOutput(block);
 }
 
 typedef AudioOutputWrapper<NullOutput> Wrapper;

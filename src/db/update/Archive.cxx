@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -30,13 +30,12 @@
 #include "archive/ArchivePlugin.hxx"
 #include "archive/ArchiveFile.hxx"
 #include "archive/ArchiveVisitor.hxx"
-#include "util/Error.hxx"
 #include "util/StringCompare.hxx"
 #include "Log.hxx"
 
 #include <string>
+#include <stdexcept>
 
-#include <sys/stat.h>
 #include <string.h>
 
 static Directory *
@@ -138,7 +137,7 @@ UpdateWalk::UpdateArchiveFile(Directory &parent, const char *name,
 {
 	Directory *directory = LockFindChild(parent, name);
 
-	if (directory != nullptr && directory->mtime == info.mtime &&
+	if (directory != nullptr && directory->mtime == std::chrono::system_clock::to_time_t(info.mtime) &&
 	    !walk_discard)
 		/* MPD has already scanned the archive, and it hasn't
 		   changed since - don't consider updating it */
@@ -151,10 +150,11 @@ UpdateWalk::UpdateArchiveFile(Directory &parent, const char *name,
 		return;
 
 	/* open archive */
-	Error error;
-	ArchiveFile *file = archive_file_open(&plugin, path_fs, error);
-	if (file == nullptr) {
-		LogError(error);
+	ArchiveFile *file;
+	try {
+		file = archive_file_open(&plugin, path_fs);
+	} catch (const std::runtime_error &e) {
+		LogError(e);
 		if (directory != nullptr)
 			editor.LockDeleteDirectory(directory);
 		return;
@@ -173,7 +173,7 @@ UpdateWalk::UpdateArchiveFile(Directory &parent, const char *name,
 		directory->device = DEVICE_INARCHIVE;
 	}
 
-	directory->mtime = info.mtime;
+	directory->mtime = std::chrono::system_clock::to_time_t(info.mtime);
 
 	UpdateArchiveVisitor visitor(*this, *file, directory);
 	file->Visit(visitor);

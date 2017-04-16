@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -22,10 +22,15 @@
 #include "PrefixedLightSong.hxx"
 #include "db/Selection.hxx"
 #include "db/LightDirectory.hxx"
-#include "db/LightSong.hxx"
 #include "db/Interface.hxx"
 #include "fs/Traits.hxx"
-#include "util/Error.hxx"
+
+#ifdef _LIBCPP_VERSION
+/* workaround for "error: incomplete type 'PlaylistInfo' used in type
+   trait expression" with libc++ version 3900 (from Android NDK
+   r13b) */
+#include "db/PlaylistInfo.hxx"
+#endif
 
 #include <string>
 
@@ -42,55 +47,51 @@ struct PrefixedLightDirectory : LightDirectory {
 	}
 };
 
-static bool
+static void
 PrefixVisitDirectory(const char *base, const VisitDirectory &visit_directory,
-		     const LightDirectory &directory, Error &error)
+		     const LightDirectory &directory)
 {
-	return visit_directory(PrefixedLightDirectory(directory, base), error);
+	visit_directory(PrefixedLightDirectory(directory, base));
 }
 
-static bool
+static void
 PrefixVisitSong(const char *base, const VisitSong &visit_song,
-		const LightSong &song, Error &error)
+		const LightSong &song)
 {
-	return visit_song(PrefixedLightSong(song, base), error);
+	visit_song(PrefixedLightSong(song, base));
 }
 
-static bool
+static void
 PrefixVisitPlaylist(const char *base, const VisitPlaylist &visit_playlist,
 		    const PlaylistInfo &playlist,
-		    const LightDirectory &directory,
-		    Error &error)
+		    const LightDirectory &directory)
 {
-	return visit_playlist(playlist,
-			      PrefixedLightDirectory(directory, base),
-			      error);
+	visit_playlist(playlist,
+		       PrefixedLightDirectory(directory, base));
 }
 
-bool
+void
 WalkMount(const char *base, const Database &db,
 	  bool recursive, const SongFilter *filter,
 	  const VisitDirectory &visit_directory, const VisitSong &visit_song,
-	  const VisitPlaylist &visit_playlist,
-	  Error &error)
+	  const VisitPlaylist &visit_playlist)
 {
 	using namespace std::placeholders;
 
 	VisitDirectory vd;
 	if (visit_directory)
 		vd = std::bind(PrefixVisitDirectory,
-			       base, std::ref(visit_directory), _1, _2);
+			       base, std::ref(visit_directory), _1);
 
 	VisitSong vs;
 	if (visit_song)
 		vs = std::bind(PrefixVisitSong,
-			       base, std::ref(visit_song), _1, _2);
+			       base, std::ref(visit_song), _1);
 
 	VisitPlaylist vp;
 	if (visit_playlist)
 		vp = std::bind(PrefixVisitPlaylist,
-			       base, std::ref(visit_playlist), _1, _2, _3);
+			       base, std::ref(visit_playlist), _1, _2);
 
-	return db.Visit(DatabaseSelection("", recursive, filter),
-			vd, vs, vp, error);
+	db.Visit(DatabaseSelection("", recursive, filter), vd, vs, vp);
 }

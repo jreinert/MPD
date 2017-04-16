@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -22,7 +22,6 @@
 
 #ifndef WIN32
 
-#include "WakeFD.hxx"
 #include "SocketMonitor.hxx"
 #include "util/Manual.hxx"
 #include "system/FatalError.hxx"
@@ -116,7 +115,7 @@ at_fork_child()
 static void
 SignalCallback(int signo)
 {
-	assert(signal_handlers[signo] != nullptr);
+	assert(signal_handlers[signo]);
 
 	if (!signal_pending[signo].exchange(true))
 		monitor->WakeUp();
@@ -159,7 +158,7 @@ SignalMonitorFinish()
 	sa.sa_handler = SIG_DFL;
 
 	for (unsigned i = 0; i < MAX_SIGNAL; ++i) {
-		if (signal_handlers[i] != nullptr) {
+		if (signal_handlers[i]) {
 			x_sigaction(i, sa);
 			signal_handlers[i] = nullptr;
 		}
@@ -171,16 +170,10 @@ SignalMonitorFinish()
 	monitor.Destruct();
 }
 
-EventLoop &
-SignalMonitorGetEventLoop()
-{
-	return monitor->GetEventLoop();
-}
-
 void
 SignalMonitorRegister(int signo, SignalHandler handler)
 {
-	assert(signal_handlers[signo] == nullptr);
+	assert(!signal_handlers[signo]);
 #ifndef USE_SIGNALFD
 	assert(!signal_pending[signo]);
 #endif
@@ -210,7 +203,7 @@ SignalMonitor::OnSocketReady(unsigned)
 	int signo;
 	while ((signo = fd.Read()) >= 0) {
 		assert(unsigned(signo) < MAX_SIGNAL);
-		assert(signal_handlers[signo] != nullptr);
+		assert(signal_handlers[signo]);
 
 		signal_handlers[signo]();
 	}

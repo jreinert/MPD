@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -33,8 +33,6 @@
 #include "fs/NarrowPath.hxx"
 
 #include <FLAC/metadata.h>
-
-#include <string.h>
 
 class FlacPlaylist final : public SongEnumerator {
 	const char *const uri;
@@ -96,9 +94,7 @@ flac_playlist_open_uri(const char *uri,
 		/* only local files supported */
 		return nullptr;
 
-	const auto path_fs = AllocatedPath::FromUTF8(uri);
-	if (path_fs.IsNull())
-		return nullptr;
+	const auto path_fs = AllocatedPath::FromUTF8Throw(uri);
 
 	const NarrowPath narrow_path_fs(path_fs);
 

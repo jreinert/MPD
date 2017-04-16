@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -40,8 +40,10 @@ tag_print(Response &r, TagType type, const char *value)
 void
 tag_print_values(Response &r, const Tag &tag)
 {
+	const auto tag_mask = r.GetTagMask();
 	for (const auto &i : tag)
-		r.Format("%s: %s\n", tag_item_names[i.type], i.value);
+		if (tag_mask.Test(i.type))
+			tag_print(r, i.type, i.value);
 }
 
 void

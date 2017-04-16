@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -19,7 +19,6 @@
 
 #include "config.h"
 #include "UpnpNeighborPlugin.hxx"
-#include "lib/upnp/Domain.hxx"
 #include "lib/upnp/ClientInit.hxx"
 #include "lib/upnp/Discovery.hxx"
 #include "lib/upnp/ContentDirectoryService.hxx"
@@ -61,7 +60,7 @@ public:
 		:NeighborExplorer(_listener) {}
 
 	/* virtual methods from class NeighborExplorer */
-	virtual bool Open(Error &error) override;
+	void Open() override;
 	virtual void Close() override;
 	virtual List GetList() const override;
 
@@ -71,8 +70,8 @@ private:
 	virtual void LostUPnP(const ContentDirectoryService &service) override;
 };
 
-bool
-UpnpNeighborExplorer::Open(gcc_unused Error &error)
+void
+UpnpNeighborExplorer::Open()
 {
 	UpnpClient_Handle handle;
 	UpnpClientGlobalInit(handle);
@@ -86,8 +85,6 @@ UpnpNeighborExplorer::Open(gcc_unused Error &error)
 		UpnpClientGlobalFinish();
 		throw;
 	}
-
-	return true;
 }
 
 void
@@ -131,8 +128,7 @@ UpnpNeighborExplorer::LostUPnP(const ContentDirectoryService &service)
 static NeighborExplorer *
 upnp_neighbor_create(gcc_unused EventLoop &loop,
 		     NeighborListener &listener,
-		     gcc_unused const ConfigBlock &block,
-		     gcc_unused Error &error)
+		     gcc_unused const ConfigBlock &block)
 {
 	return new UpnpNeighborExplorer(listener);
 }

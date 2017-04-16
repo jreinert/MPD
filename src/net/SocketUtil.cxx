@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -23,50 +23,38 @@
 #include "SocketError.hxx"
 #include "system/fd_util.h"
 
-#include <unistd.h>
-
-#ifdef HAVE_IPV6
-#include <string.h>
-#endif
-
 int
 socket_bind_listen(int domain, int type, int protocol,
 		   SocketAddress address,
-		   int backlog,
-		   Error &error)
+		   int backlog)
 {
 	int fd, ret;
 	const int reuse = 1;
 
 	fd = socket_cloexec_nonblock(domain, type, protocol);
-	if (fd < 0) {
-		SetSocketError(error);
-		error.AddPrefix("Failed to create socket: ");
-		return -1;
-	}
+	if (fd < 0)
+		throw MakeSocketError("Failed to create socket");
 
 	ret = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR,
 			 (const char *) &reuse, sizeof(reuse));
 	if (ret < 0) {
-		SetSocketError(error);
-		error.AddPrefix("setsockopt() failed: ");
+		auto error = GetSocketError();
 		close_socket(fd);
-		return -1;
+		throw MakeSocketError(error, "setsockopt() failed");
 	}
 
 	ret = bind(fd, address.GetAddress(), address.GetSize());
 	if (ret < 0) {
-		SetSocketError(error);
+		auto error = GetSocketError();
 		close_socket(fd);
-		return -1;
+		throw MakeSocketError(error, "Failed to bind socket");
 	}
 
 	ret = listen(fd, backlog);
 	if (ret < 0) {
-		SetSocketError(error);
-		error.AddPrefix("listen() failed: ");
+		auto error = GetSocketError();
 		close_socket(fd);
-		return -1;
+		throw MakeSocketError(error, "Failed to listen on socket");
 	}
 
 #if defined(HAVE_STRUCT_UCRED) && defined(SO_PASSCRED)

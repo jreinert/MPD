@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -26,7 +26,6 @@
 #include "db/plugins/simple/Song.hxx"
 
 #include <assert.h>
-#include <stddef.h>
 
 void
 DatabaseEditor::DeleteSong(Directory &dir, Song *del)
@@ -40,7 +39,7 @@ DatabaseEditor::DeleteSong(Directory &dir, Song *del)
 	const ScopeDatabaseUnlock unlock;
 
 	/* now take it out of the playlist (in the main_task) */
-	remove.Remove(del);
+	remove.Remove(del->GetURI());
 
 	/* finally, all possible references gone, free it */
 	del->Free();

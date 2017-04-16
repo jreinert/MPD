@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -53,7 +53,7 @@ class NfsManager final : IdleMonitor {
 
 	protected:
 		/* virtual methods from NfsConnection */
-		void OnNfsConnectionError(Error &&error) override;
+		void OnNfsConnectionError(std::exception_ptr &&e) override;
 	};
 
 	struct Compare {
@@ -64,6 +64,10 @@ class NfsManager final : IdleMonitor {
 		gcc_pure
 		bool operator()(const ManagedConnection &a,
 				const LookupKey b) const;
+
+		gcc_pure
+		bool operator()(const ManagedConnection &a,
+				const ManagedConnection &b) const;
 	};
 
 	/**
@@ -92,6 +96,8 @@ public:
 	 * Must be run from EventLoop's thread.
 	 */
 	~NfsManager();
+
+	using IdleMonitor::GetEventLoop;
 
 	gcc_pure
 	NfsConnection &GetConnection(const char *server,

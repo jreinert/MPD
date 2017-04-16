@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -19,26 +19,21 @@
 
 #include "config.h"
 #include "Thread.hxx"
-#include "util/Error.hxx"
+#include "system/Error.hxx"
 
 #ifdef ANDROID
 #include "java/Global.hxx"
 #endif
 
-bool
-Thread::Start(void (*_f)(void *ctx), void *_ctx, Error &error)
+void
+Thread::Start()
 {
 	assert(!IsDefined());
 
-	f = _f;
-	ctx = _ctx;
-
 #ifdef WIN32
 	handle = ::CreateThread(nullptr, 0, ThreadProc, this, 0, &id);
-	if (handle == nullptr) {
-		error.SetLastError("Failed to create thread");
-		return false;
-	}
+	if (handle == nullptr)
+		throw MakeLastError("Failed to create thread");
 #else
 #ifndef NDEBUG
 	creating = true;
@@ -50,8 +45,7 @@ Thread::Start(void (*_f)(void *ctx), void *_ctx, Error &error)
 #ifndef NDEBUG
 		creating = false;
 #endif
-		error.SetErrno(e, "Failed to create thread");
-		return false;
+		throw MakeErrno(e, "Failed to create thread");
 	}
 
 	defined = true;
@@ -59,8 +53,6 @@ Thread::Start(void (*_f)(void *ctx), void *_ctx, Error &error)
 	creating = false;
 #endif
 #endif
-
-	return true;
 }
 
 void
@@ -79,6 +71,26 @@ Thread::Join()
 #endif
 }
 
+inline void
+Thread::Run()
+{
+#ifndef WIN32
+#ifndef NDEBUG
+	/* this works around a race condition that causes an assertion
+	   failure due to IsInside() spuriously returning false right
+	   after the thread has been created, and the calling thread
+	   hasn't initialised "defined" yet */
+	defined = true;
+#endif
+#endif
+
+	f();
+
+#ifdef ANDROID
+	Java::DetachCurrentThread();
+#endif
+}
+
 #ifdef WIN32
 
 DWORD WINAPI
@@ -86,7 +98,7 @@ Thread::ThreadProc(LPVOID ctx)
 {
 	Thread &thread = *(Thread *)ctx;
 
-	thread.f(thread.ctx);
+	thread.Run();
 	return 0;
 }
 
@@ -97,19 +109,7 @@ Thread::ThreadProc(void *ctx)
 {
 	Thread &thread = *(Thread *)ctx;
 
-#ifndef NDEBUG
-	/* this works around a race condition that causes an assertion
-	   failure due to IsInside() spuriously returning false right
-	   after the thread has been created, and the calling thread
-	   hasn't initialised "defined" yet */
-	thread.defined = true;
-#endif
-
-	thread.f(thread.ctx);
-
-#ifdef ANDROID
-	Java::DetachCurrentThread();
-#endif
+	thread.Run();
 
 	return nullptr;
 }

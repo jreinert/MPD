@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -20,35 +20,35 @@
 #include "config.h"
 #include "TagArchive.hxx"
 #include "TagStream.hxx"
-#include "tag/Generic.hxx"
 #include "archive/ArchiveFile.hxx"
 #include "input/InputStream.hxx"
 #include "thread/Cond.hxx"
-#include "util/Error.hxx"
 
 bool
 tag_archive_scan(ArchiveFile &archive, const char *path_utf8,
 		 const TagHandler &handler, void *handler_ctx)
-{
+try {
 	Mutex mutex;
 	Cond cond;
 
-	InputStreamPtr is(archive.OpenStream(path_utf8, mutex, cond,
-					     IgnoreError()));
+	InputStreamPtr is(archive.OpenStream(path_utf8, mutex, cond));
 	if (!is)
 		return false;
 
 	return tag_stream_scan(*is, handler, handler_ctx);
+} catch (const std::exception &e) {
+	return false;
 }
 
 bool
 tag_archive_scan(ArchiveFile &archive, const char *path_utf8,
 		 TagBuilder &builder)
-{
+try {
 	Mutex mutex;
 	Cond cond;
 
-	InputStreamPtr is(archive.OpenStream(path_utf8, mutex, cond,
-					     IgnoreError()));
+	InputStreamPtr is(archive.OpenStream(path_utf8, mutex, cond));
 	return is && tag_stream_scan(*is, builder);
+} catch (const std::exception &e) {
+	return false;
 }

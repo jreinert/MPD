@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -26,7 +26,9 @@ class EventLoop;
 
 #ifndef WIN32
 
-typedef void (*SignalHandler)();
+#include "util/BindMethod.hxx"
+
+typedef BoundMethod<void()> SignalHandler;
 
 /**
  * Initialise the signal monitor subsystem.
@@ -39,13 +41,6 @@ SignalMonitorInit(EventLoop &loop);
  */
 void
 SignalMonitorFinish();
-
-/**
- * Obtain a reference to the #EventLoop that was passed to
- * SignalMonitorInit().
- */
-EventLoop &
-SignalMonitorGetEventLoop();
 
 /**
  * Register a handler for the specified signal.  The handler will be

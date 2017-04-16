@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -19,10 +19,9 @@
 
 #include "config.h"
 #include "GzipOutputStream.hxx"
-#include "lib/zlib/Domain.hxx"
 #include "lib/zlib/Error.hxx"
 
-GzipOutputStream::GzipOutputStream(OutputStream &_next) throw(ZlibError)
+GzipOutputStream::GzipOutputStream(OutputStream &_next)
 	:next(_next)
 {
 	z.next_in = nullptr;

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -18,22 +18,26 @@
  */
 
 #include "config.h"
+#include "lib/alsa/NonBlock.hxx"
 #include "mixer/MixerInternal.hxx"
 #include "mixer/Listener.hxx"
 #include "output/OutputAPI.hxx"
 #include "event/MultiSocketMonitor.hxx"
 #include "event/DeferredMonitor.hxx"
-#include "event/Loop.hxx"
+#include "event/Call.hxx"
 #include "util/ASCII.hxx"
 #include "util/ReusableArray.hxx"
-#include "util/Clamp.hxx"
-#include "util/Error.hxx"
 #include "util/Domain.hxx"
+#include "util/RuntimeError.hxx"
 #include "Log.hxx"
 
-#include <algorithm>
+extern "C" {
+#include "volume_mapping.h"
+}
 
 #include <alsa/asoundlib.h>
+
+#include <math.h>
 
 #define VOLUME_MIXER_ALSA_DEFAULT		"default"
 #define VOLUME_MIXER_ALSA_CONTROL_DEFAULT	"PCM"
@@ -51,12 +55,19 @@ public:
 		DeferredMonitor::Schedule();
 	}
 
+	~AlsaMixerMonitor() {
+		BlockingCall(MultiSocketMonitor::GetEventLoop(), [this](){
+				MultiSocketMonitor::Reset();
+				DeferredMonitor::Cancel();
+			});
+	}
+
 private:
 	virtual void RunDeferred() override {
 		InvalidateSockets();
 	}
 
-	virtual int PrepareSockets() override;
+	virtual std::chrono::steady_clock::duration PrepareSockets() override;
 	virtual void DispatchSockets() override;
 };
 
@@ -69,9 +80,6 @@ class AlsaMixer final : public Mixer {
 
 	snd_mixer_t *handle;
 	snd_mixer_elem_t *elem;
-	long volume_min;
-	long volume_max;
-	int volume_set;
 
 	AlsaMixerMonitor *monitor;
 
@@ -83,37 +91,26 @@ public:
 	virtual ~AlsaMixer();
 
 	void Configure(const ConfigBlock &block);
-	bool Setup(Error &error);
+	void Setup();
 
 	/* virtual methods from class Mixer */
-	virtual bool Open(Error &error) override;
-	virtual void Close() override;
-	virtual int GetVolume(Error &error) override;
-	virtual bool SetVolume(unsigned volume, Error &error) override;
+	void Open() override;
+	void Close() override;
+	int GetVolume() override;
+	void SetVolume(unsigned volume) override;
 };
 
 static constexpr Domain alsa_mixer_domain("alsa_mixer");
 
-int
+std::chrono::steady_clock::duration
 AlsaMixerMonitor::PrepareSockets()
 {
 	if (mixer == nullptr) {
 		ClearSocketList();
-		return -1;
+		return std::chrono::steady_clock::duration(-1);
 	}
 
-	int count = snd_mixer_poll_descriptors_count(mixer);
-	if (count < 0)
-		count = 0;
-
-	struct pollfd *pfds = pfd_buffer.Get(count);
-
-	count = snd_mixer_poll_descriptors(mixer, pfds, count);
-	if (count < 0)
-		count = 0;
-
-	ReplaceSocketList(pfds, count);
-	return -1;
+	return PrepareAlsaMixerSockets(*this, mixer, pfd_buffer);
 }
 
 void
@@ -149,8 +146,11 @@ alsa_mixer_elem_callback(snd_mixer_elem_t *elem, unsigned mask)
 		snd_mixer_elem_get_callback_private(elem);
 
 	if (mask & SND_CTL_EVENT_MASK_VALUE) {
-		int volume = mixer.GetVolume(IgnoreError());
-		mixer.listener.OnMixerVolumeChanged(mixer, volume);
+		try {
+			int volume = mixer.GetVolume();
+			mixer.listener.OnMixerVolumeChanged(mixer, volume);
+		} catch (const std::runtime_error &) {
+		}
 	}
 
 	return 0;
@@ -175,8 +175,7 @@ AlsaMixer::Configure(const ConfigBlock &block)
 static Mixer *
 alsa_mixer_init(EventLoop &event_loop, gcc_unused AudioOutput &ao,
 		MixerListener &listener,
-		const ConfigBlock &block,
-		gcc_unused Error &error)
+		const ConfigBlock &block)
 {
 	AlsaMixer *am = new AlsaMixer(event_loop, listener);
 	am->Configure(block);
@@ -206,74 +205,52 @@ alsa_mixer_lookup_elem(snd_mixer_t *handle, const char *name, unsigned idx)
 	return nullptr;
 }
 
-inline bool
-AlsaMixer::Setup(Error &error)
+inline void
+AlsaMixer::Setup()
 {
 	int err;
 
-	if ((err = snd_mixer_attach(handle, device)) < 0) {
-		error.Format(alsa_mixer_domain, err,
-			     "failed to attach to %s: %s",
-			     device, snd_strerror(err));
-		return false;
-	}
+	if ((err = snd_mixer_attach(handle, device)) < 0)
+		throw FormatRuntimeError("failed to attach to %s: %s",
+					 device, snd_strerror(err));
 
-	if ((err = snd_mixer_selem_register(handle, nullptr,
-		    nullptr)) < 0) {
-		error.Format(alsa_mixer_domain, err,
-			     "snd_mixer_selem_register() failed: %s",
-			     snd_strerror(err));
-		return false;
-	}
+	if ((err = snd_mixer_selem_register(handle, nullptr, nullptr)) < 0)
+		throw FormatRuntimeError("snd_mixer_selem_register() failed: %s",
+					 snd_strerror(err));
 
-	if ((err = snd_mixer_load(handle)) < 0) {
-		error.Format(alsa_mixer_domain, err,
-			     "snd_mixer_load() failed: %s\n",
-			     snd_strerror(err));
-		return false;
-	}
+	if ((err = snd_mixer_load(handle)) < 0)
+		throw FormatRuntimeError("snd_mixer_load() failed: %s\n",
+					 snd_strerror(err));
 
 	elem = alsa_mixer_lookup_elem(handle, control, index);
-	if (elem == nullptr) {
-		error.Format(alsa_mixer_domain, 0,
-			    "no such mixer control: %s", control);
-		return false;
-	}
-
-	snd_mixer_selem_get_playback_volume_range(elem, &volume_min,
-						  &volume_max);
+	if (elem == nullptr)
+		throw FormatRuntimeError("no such mixer control: %s", control);
 
 	snd_mixer_elem_set_callback_private(elem, this);
 	snd_mixer_elem_set_callback(elem, alsa_mixer_elem_callback);
 
 	monitor = new AlsaMixerMonitor(event_loop, handle);
-
-	return true;
 }
 
-inline bool
-AlsaMixer::Open(Error &error)
+void
+AlsaMixer::Open()
 {
 	int err;
 
-	volume_set = -1;
-
 	err = snd_mixer_open(&handle, 0);
-	if (err < 0) {
-		error.Format(alsa_mixer_domain, err,
-			     "snd_mixer_open() failed: %s", snd_strerror(err));
-		return false;
-	}
+	if (err < 0)
+		throw FormatRuntimeError("snd_mixer_open() failed: %s",
+					 snd_strerror(err));
 
-	if (!Setup(error)) {
+	try {
+		Setup();
+	} catch (...) {
 		snd_mixer_close(handle);
-		return false;
+		throw;
 	}
-
-	return true;
 }
 
-inline void
+void
 AlsaMixer::Close()
 {
 	assert(handle != nullptr);
@@ -284,71 +261,30 @@ AlsaMixer::Close()
 	snd_mixer_close(handle);
 }
 
-inline int
-AlsaMixer::GetVolume(Error &error)
+int
+AlsaMixer::GetVolume()
 {
 	int err;
-	int ret;
-	long level;
 
 	assert(handle != nullptr);
 
 	err = snd_mixer_handle_events(handle);
-	if (err < 0) {
-		error.Format(alsa_mixer_domain, err,
-			     "snd_mixer_handle_events() failed: %s",
-			     snd_strerror(err));
-		return false;
-	}
+	if (err < 0)
+		throw FormatRuntimeError("snd_mixer_handle_events() failed: %s",
+					 snd_strerror(err));
 
-	err = snd_mixer_selem_get_playback_volume(elem,
-						  SND_MIXER_SCHN_FRONT_LEFT,
-						  &level);
-	if (err < 0) {
-		error.Format(alsa_mixer_domain, err,
-			     "failed to read ALSA volume: %s",
-			     snd_strerror(err));
-		return false;
-	}
-
-	ret = ((volume_set / 100.0) * (volume_max - volume_min)
-	       + volume_min) + 0.5;
-	if (volume_set > 0 && ret == level) {
-		ret = volume_set;
-	} else {
-		ret = (int)(100 * (((float)(level - volume_min)) /
-				   (volume_max - volume_min)) + 0.5);
-	}
-
-	return ret;
+	return lrint(100 * get_normalized_playback_volume(elem, SND_MIXER_SCHN_FRONT_LEFT));
 }
 
-inline bool
-AlsaMixer::SetVolume(unsigned volume, Error &error)
+void
+AlsaMixer::SetVolume(unsigned volume)
 {
-	float vol;
-	long level;
-	int err;
-
 	assert(handle != nullptr);
 
-	vol = volume;
-
-	volume_set = vol + 0.5;
-
-	level = (long)(((vol / 100.0) * (volume_max - volume_min) +
-			volume_min) + 0.5);
-	level = Clamp(level, volume_min, volume_max);
-
-	err = snd_mixer_selem_set_playback_volume_all(elem, level);
-	if (err < 0) {
-		error.Format(alsa_mixer_domain, err,
-			     "failed to set ALSA volume: %s",
-			     snd_strerror(err));
-		return false;
-	}
-
-	return true;
+	int err = set_normalized_playback_volume(elem, 0.01*volume, 1);
+	if (err < 0)
+		throw FormatRuntimeError("failed to set ALSA volume: %s",
+					 snd_strerror(err));
 }
 
 const MixerPlugin alsa_mixer_plugin = {

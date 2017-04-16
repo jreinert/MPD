@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -20,7 +20,6 @@
 #include "config.h"
 #include "DatabaseCommands.hxx"
 #include "Request.hxx"
-#include "db/DatabaseGlue.hxx"
 #include "db/DatabaseQueue.hxx"
 #include "db/DatabasePlaylist.hxx"
 #include "db/DatabasePrint.hxx"
@@ -29,25 +28,21 @@
 #include "CommandError.hxx"
 #include "client/Client.hxx"
 #include "client/Response.hxx"
-#include "tag/Tag.hxx"
+#include "tag/ParseName.hxx"
+#include "tag/Mask.hxx"
 #include "util/ConstBuffer.hxx"
-#include "util/Error.hxx"
 #include "util/StringAPI.hxx"
 #include "SongFilter.hxx"
 #include "BulkEdit.hxx"
 
-#include <string.h>
+#include <memory>
 
 CommandResult
 handle_listfiles_db(Client &client, Response &r, const char *uri)
 {
 	const DatabaseSelection selection(uri, false);
-
-	Error error;
-	if (!db_selection_print(r, client.partition,
-				selection, false, true, error))
-		return print_error(r, error);
-
+	db_selection_print(r, client.GetPartition(),
+			   selection, false, true);
 	return CommandResult::OK;
 }
 
@@ -55,12 +50,8 @@ CommandResult
 handle_lsinfo2(Client &client, const char *uri, Response &r)
 {
 	const DatabaseSelection selection(uri, false);
-
-	Error error;
-	if (!db_selection_print(r, client.partition,
-				selection, true, false, error))
-		return print_error(r, error);
-
+	db_selection_print(r, client.GetPartition(),
+			   selection, true, false);
 	return CommandResult::OK;
 }
 
@@ -76,6 +67,16 @@ handle_match(Client &client, Request args, Response &r, bool fold_case)
 	} else
 		window.SetAll();
 
+	TagType sort = TAG_NUM_OF_ITEM_TYPES;
+	if (args.size >= 2 && StringIsEqual(args[args.size - 2], "sort")) {
+		sort = tag_name_parse_i(args.back());
+		if (sort == TAG_NUM_OF_ITEM_TYPES)
+			throw ProtocolError(ACK_ERROR_ARG, "Unknown sort tag");
+
+		args.pop_back();
+		args.pop_back();
+	}
+
 	SongFilter filter;
 	if (!filter.Parse(args, fold_case)) {
 		r.Error(ACK_ERROR_ARG, "incorrect arguments");
@@ -84,12 +85,11 @@ handle_match(Client &client, Request args, Response &r, bool fold_case)
 
 	const DatabaseSelection selection("", true, &filter);
 
-	Error error;
-	return db_selection_print(r, client.partition,
-				  selection, true, false,
-				  window.start, window.end, error)
-		? CommandResult::OK
-		: print_error(r, error);
+	db_selection_print(r, client.GetPartition(),
+			   selection, true, false,
+			   sort,
+			   window.start, window.end);
+	return CommandResult::OK;
 }
 
 CommandResult
@@ -113,13 +113,12 @@ handle_match_add(Client &client, Request args, Response &r, bool fold_case)
 		return CommandResult::ERROR;
 	}
 
-	const ScopeBulkEdit bulk_edit(client.partition);
+	auto &partition = client.GetPartition();
+	const ScopeBulkEdit bulk_edit(partition);
 
 	const DatabaseSelection selection("", true, &filter);
-	Error error;
-	return AddFromDatabase(client.partition, selection, error)
-		? CommandResult::OK
-		: print_error(r, error);
+	AddFromDatabase(partition, selection);
+	return CommandResult::OK;
 }
 
 CommandResult
@@ -145,15 +144,11 @@ handle_searchaddpl(Client &client, Request args, Response &r)
 		return CommandResult::ERROR;
 	}
 
-	Error error;
-	const Database *db = client.GetDatabase(error);
-	if (db == nullptr)
-		return print_error(r, error);
+	const Database &db = client.GetDatabaseOrThrow();
 
-	return search_add_to_playlist(*db, *client.GetStorage(),
-				      "", playlist, &filter, error)
-		? CommandResult::OK
-		: print_error(r, error);
+	search_add_to_playlist(db, client.GetStorage(),
+			       "", playlist, &filter);
+	return CommandResult::OK;
 }
 
 CommandResult
@@ -179,10 +174,8 @@ handle_count(Client &client, Request args, Response &r)
 		return CommandResult::ERROR;
 	}
 
-	Error error;
-	return PrintSongCount(r, client.partition, "", &filter, group, error)
-		? CommandResult::OK
-		: print_error(r, error);
+	PrintSongCount(r, client.GetPartition(), "", &filter, group);
+	return CommandResult::OK;
 }
 
 CommandResult
@@ -191,12 +184,10 @@ handle_listall(Client &client, Request args, Response &r)
 	/* default is root directory */
 	const auto uri = args.GetOptional(0, "");
 
-	Error error;
-	return db_selection_print(r, client.partition,
-				  DatabaseSelection(uri, true),
-				  false, false, error)
-		? CommandResult::OK
-		: print_error(r, error);
+	db_selection_print(r, client.GetPartition(),
+			   DatabaseSelection(uri, true),
+			   false, false);
+	return CommandResult::OK;
 }
 
 CommandResult
@@ -212,8 +203,8 @@ handle_list(Client &client, Request args, Response &r)
 		return CommandResult::ERROR;
 	}
 
-	SongFilter *filter = nullptr;
-	tag_mask_t group_mask = 0;
+	std::unique_ptr<SongFilter> filter;
+	TagMask group_mask = TagMask::None();
 
 	if (args.size == 1) {
 		/* for compatibility with < 0.12.0 */
@@ -224,7 +215,8 @@ handle_list(Client &client, Request args, Response &r)
 			return CommandResult::ERROR;
 		}
 
-		filter = new SongFilter((unsigned)TAG_ARTIST, args.shift());
+		filter.reset(new SongFilter((unsigned)TAG_ARTIST,
+					    args.shift()));
 	}
 
 	while (args.size >= 2 &&
@@ -237,38 +229,29 @@ handle_list(Client &client, Request args, Response &r)
 			return CommandResult::ERROR;
 		}
 
-		group_mask |= tag_mask_t(1) << unsigned(gt);
+		group_mask |= gt;
 
 		args.pop_back();
 		args.pop_back();
 	}
 
 	if (!args.IsEmpty()) {
-		filter = new SongFilter();
+		filter.reset(new SongFilter());
 		if (!filter->Parse(args, false)) {
-			delete filter;
 			r.Error(ACK_ERROR_ARG, "not able to parse args");
 			return CommandResult::ERROR;
 		}
 	}
 
 	if (tagType < TAG_NUM_OF_ITEM_TYPES &&
-	    group_mask & (tag_mask_t(1) << tagType)) {
-		delete filter;
+	    group_mask.Test(TagType(tagType))) {
 		r.Error(ACK_ERROR_ARG, "Conflicting group");
 		return CommandResult::ERROR;
 	}
 
-	Error error;
-	CommandResult ret =
-		PrintUniqueTags(r, client.partition,
-				tagType, group_mask, filter, error)
-		? CommandResult::OK
-		: print_error(r, error);
-
-	delete filter;
-
-	return ret;
+	PrintUniqueTags(r, client.GetPartition(),
+			tagType, group_mask, filter.get());
+	return CommandResult::OK;
 }
 
 CommandResult
@@ -277,10 +260,8 @@ handle_listallinfo(Client &client, Request args, Response &r)
 	/* default is root directory */
 	const auto uri = args.GetOptional(0, "");
 
-	Error error;
-	return db_selection_print(r, client.partition,
-				  DatabaseSelection(uri, true),
-				  true, false, error)
-		? CommandResult::OK
-		: print_error(r, error);
+	db_selection_print(r, client.GetPartition(),
+			   DatabaseSelection(uri, true),
+			   true, false);
+	return CommandResult::OK;
 }

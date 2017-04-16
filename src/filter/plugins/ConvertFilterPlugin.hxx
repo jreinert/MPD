@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -21,17 +21,21 @@
 #define MPD_CONVERT_FILTER_PLUGIN_HXX
 
 class Filter;
-class Error;
 struct AudioFormat;
+
+Filter *
+convert_filter_new(AudioFormat in_audio_format,
+		   AudioFormat out_audio_format);
 
 /**
  * Sets the output audio format for the specified filter.  You must
  * call this after the filter has been opened.  Since this audio
  * format switch is a violation of the filter API, this filter must be
  * the last in a chain.
+ *
+ * Throws std::runtime_error on error.
  */
-bool
-convert_filter_set(Filter *filter, AudioFormat out_audio_format,
-		   Error &error);
+void
+convert_filter_set(Filter *filter, AudioFormat out_audio_format);
 
 #endif

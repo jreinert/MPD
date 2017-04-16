@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -20,9 +20,9 @@
 #include "config.h"
 #include "OpusTags.hxx"
 #include "OpusReader.hxx"
-#include "XiphTags.hxx"
-#include "tag/TagHandler.hxx"
-#include "tag/Tag.hxx"
+#include "lib/xiph/XiphTags.hxx"
+#include "tag/Handler.hxx"
+#include "tag/ParseName.hxx"
 #include "ReplayGainInfo.hxx"
 
 #include <stdint.h>
@@ -52,7 +52,7 @@ ScanOneOpusTag(const char *name, const char *value,
 		char *endptr;
 		long l = strtol(value, &endptr, 10);
 		if (endptr > value && *endptr == 0)
-			rgi->tuples[REPLAY_GAIN_TRACK].gain = double(l) / 256.;
+			rgi->track.gain = double(l) / 256.;
 	}
 
 	tag_handler_invoke_pair(handler, ctx, name, value);

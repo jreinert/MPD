@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -32,15 +32,14 @@
 #include "FfmpegMetaData.hxx"
 #include "FfmpegIo.hxx"
 #include "pcm/Interleave.hxx"
-#include "tag/TagBuilder.hxx"
-#include "tag/TagHandler.hxx"
+#include "tag/Builder.hxx"
+#include "tag/Handler.hxx"
 #include "tag/ReplayGain.hxx"
 #include "tag/MixRamp.hxx"
 #include "input/InputStream.hxx"
 #include "CheckAudioFormat.hxx"
+#include "util/ScopeExit.hxx"
 #include "util/ConstBuffer.hxx"
-#include "util/Error.hxx"
-#include "util/Domain.hxx"
 #include "LogV.hxx"
 
 extern "C" {
@@ -48,7 +47,6 @@ extern "C" {
 #include <libavformat/avformat.h>
 #include <libavformat/avio.h>
 #include <libavutil/avutil.h>
-#include <libavutil/log.h>
 
 #if LIBAVUTIL_VERSION_MAJOR >= 53
 #include <libavutil/frame.h>
@@ -58,6 +56,11 @@ extern "C" {
 #include <assert.h>
 #include <string.h>
 
+/**
+ * Muxer options to be passed to avformat_open_input().
+ */
+static AVDictionary *avformat_options = nullptr;
+
 static AVFormatContext *
 FfmpegOpenInput(AVIOContext *pb,
 		const char *filename,
@@ -65,19 +68,85 @@ FfmpegOpenInput(AVIOContext *pb,
 {
 	AVFormatContext *context = avformat_alloc_context();
 	if (context == nullptr)
-		return nullptr;
+		throw std::runtime_error("avformat_alloc_context() failed");
 
 	context->pb = pb;
 
-	avformat_open_input(&context, filename, fmt, nullptr);
+	AVDictionary *options = nullptr;
+	AtScopeExit(&options) { av_dict_free(&options); };
+	av_dict_copy(&options, avformat_options, 0);
+
+	int err = avformat_open_input(&context, filename, fmt, &options);
+	if (err < 0)
+		throw MakeFfmpegError(err, "avformat_open_input() failed");
+
 	return context;
 }
 
 static bool
-ffmpeg_init(gcc_unused const ConfigBlock &block)
+ffmpeg_init(const ConfigBlock &block)
 {
 	FfmpegInit();
+
+	static constexpr const char *option_names[] = {
+		"probesize",
+		"analyzeduration",
+	};
+
+	for (const char *name : option_names) {
+		const char *value = block.GetBlockValue(name);
+		if (value != nullptr)
+			av_dict_set(&avformat_options, name, value, 0);
+	}
+
 	return true;
+}
+
+static void
+ffmpeg_finish()
+{
+	av_dict_free(&avformat_options);
+}
+
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(57, 25, 0) /* FFmpeg 3.1 */
+
+gcc_pure
+static const AVCodecParameters &
+GetCodecParameters(const AVStream &stream)
+{
+	return *stream.codecpar;
+}
+
+gcc_pure
+static AVSampleFormat
+GetSampleFormat(const AVCodecParameters &codec_params)
+{
+	return AVSampleFormat(codec_params.format);
+}
+
+#else
+
+gcc_pure
+static const AVCodecContext &
+GetCodecParameters(const AVStream &stream)
+{
+	return *stream.codec;
+}
+
+gcc_pure
+static AVSampleFormat
+GetSampleFormat(const AVCodecContext &codec_context)
+{
+	return codec_context.sample_fmt;
+}
+
+#endif
+
+gcc_pure
+static bool
+IsAudio(const AVStream &stream)
+{
+	return GetCodecParameters(stream).codec_type == AVMEDIA_TYPE_AUDIO;
 }
 
 gcc_pure
@@ -85,8 +154,7 @@ static int
 ffmpeg_find_audio_stream(const AVFormatContext &format_context)
 {
 	for (unsigned i = 0; i < format_context.nb_streams; ++i)
-		if (format_context.streams[i]->codec->codec_type ==
-		    AVMEDIA_TYPE_AUDIO)
+		if (IsAudio(*format_context.streams[i]))
 			return i;
 
 	return -1;
@@ -106,12 +174,13 @@ start_time_fallback(const AVStream &stream)
 
 /**
  * Copy PCM data from a non-empty AVFrame to an interleaved buffer.
+ *
+ * Throws #std::exception on error.
  */
 static ConstBuffer<void>
 copy_interleave_frame(const AVCodecContext &codec_context,
 		      const AVFrame &frame,
-		      FfmpegBuffer &global_buffer,
-		      Error &error)
+		      FfmpegBuffer &global_buffer)
 {
 	assert(frame.nb_samples > 0);
 
@@ -122,20 +191,16 @@ copy_interleave_frame(const AVCodecContext &codec_context,
 					   frame.nb_samples,
 					   codec_context.sample_fmt, 1);
 	assert(data_size != 0);
-	if (data_size < 0) {
-		SetFfmpegError(error, data_size);
-		return 0;
-	}
+	if (data_size < 0)
+		throw MakeFfmpegError(data_size);
 
 	void *output_buffer;
 	if (av_sample_fmt_is_planar(codec_context.sample_fmt) &&
 	    codec_context.channels > 1) {
 		output_buffer = global_buffer.GetT<uint8_t>(data_size);
-		if (output_buffer == nullptr) {
+		if (output_buffer == nullptr)
 			/* Not enough memory - shouldn't happen */
-			error.SetErrno(ENOMEM);
-			return 0;
-		}
+			throw std::bad_alloc();
 
 		PcmInterleave(output_buffer,
 			      ConstBuffer<const void *>((const void *const*)frame.extended_data,
@@ -178,6 +243,93 @@ PtsToPcmFrame(uint64_t pts, const AVStream &stream,
 }
 
 /**
+ * Invoke DecoderClient::SubmitData() with the contents of an
+ * #AVFrame.
+ */
+static DecoderCommand
+FfmpegSendFrame(DecoderClient &client, InputStream &is,
+		AVCodecContext &codec_context,
+		const AVFrame &frame,
+		size_t &skip_bytes,
+		FfmpegBuffer &buffer)
+{
+	ConstBuffer<void> output_buffer;
+
+	try {
+		output_buffer = copy_interleave_frame(codec_context, frame,
+						      buffer);
+	} catch (const std::exception e) {
+		/* this must be a serious error, e.g. OOM */
+		LogError(e);
+		return DecoderCommand::STOP;
+	}
+
+	if (skip_bytes > 0) {
+		if (skip_bytes >= output_buffer.size) {
+			skip_bytes -= output_buffer.size;
+			return DecoderCommand::NONE;
+		}
+
+		output_buffer.data =
+			(const uint8_t *)output_buffer.data + skip_bytes;
+		output_buffer.size -= skip_bytes;
+		skip_bytes = 0;
+	}
+
+	return client.SubmitData(is,
+				 output_buffer.data, output_buffer.size,
+				 codec_context.bit_rate / 1000);
+}
+
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(57, 37, 0)
+
+static DecoderCommand
+FfmpegReceiveFrames(DecoderClient &client, InputStream &is,
+		    AVCodecContext &codec_context,
+		    AVFrame &frame,
+		    size_t &skip_bytes,
+		    FfmpegBuffer &buffer,
+		    bool &eof)
+{
+	while (true) {
+		DecoderCommand cmd;
+
+		int err = avcodec_receive_frame(&codec_context, &frame);
+		switch (err) {
+		case 0:
+			cmd = FfmpegSendFrame(client, is, codec_context,
+					      frame, skip_bytes,
+					      buffer);
+			if (cmd != DecoderCommand::NONE)
+				return cmd;
+
+			break;
+
+		case AVERROR_EOF:
+			eof = true;
+			return DecoderCommand::NONE;
+
+		case AVERROR(EAGAIN):
+			/* need to call avcodec_send_packet() */
+			return DecoderCommand::NONE;
+
+		default:
+			{
+				char msg[256];
+				av_strerror(err, msg, sizeof(msg));
+				FormatWarning(ffmpeg_domain,
+					      "avcodec_send_packet() failed: %s",
+					      msg);
+			}
+
+			return DecoderCommand::STOP;
+		}
+	}
+}
+
+#endif
+
+/**
  * Decode an #AVPacket and send the resulting PCM data to the decoder
  * API.
  *
@@ -186,8 +338,8 @@ PtsToPcmFrame(uint64_t pts, const AVStream &stream,
  * desired time stamp has been reached
  */
 static DecoderCommand
-ffmpeg_send_packet(Decoder &decoder, InputStream &is,
-		   AVPacket packet,
+ffmpeg_send_packet(DecoderClient &client, InputStream &is,
+		   AVPacket &&packet,
 		   AVCodecContext &codec_context,
 		   const AVStream &stream,
 		   AVFrame &frame,
@@ -204,13 +356,40 @@ ffmpeg_send_packet(Decoder &decoder, InputStream &is,
 			if (cur_frame < min_frame)
 				skip_bytes = pcm_frame_size * (min_frame - cur_frame);
 		} else
-			decoder_timestamp(decoder,
-					  FfmpegTimeToDouble(pts,
-							     stream.time_base));
+			client.SubmitTimestamp(FfmpegTimeToDouble(pts,
+								  stream.time_base));
 	}
 
-	Error error;
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(57, 37, 0)
+	bool eof = false;
 
+	int err = avcodec_send_packet(&codec_context, &packet);
+	switch (err) {
+	case 0:
+		break;
+
+	case AVERROR_EOF:
+		eof = true;
+		break;
+
+	default:
+		{
+			char msg[256];
+			av_strerror(err, msg, sizeof(msg));
+			FormatWarning(ffmpeg_domain,
+				      "avcodec_send_packet() failed: %s", msg);
+		}
+
+		return DecoderCommand::NONE;
+	}
+
+	auto cmd = FfmpegReceiveFrames(client, is, codec_context,
+				       frame,
+				       skip_bytes, buffer, eof);
+
+	if (eof)
+		cmd = DecoderCommand::STOP;
+#else
 	DecoderCommand cmd = DecoderCommand::NONE;
 	while (packet.size > 0 && cmd == DecoderCommand::NONE) {
 		int got_frame = 0;
@@ -229,33 +408,31 @@ ffmpeg_send_packet(Decoder &decoder, InputStream &is,
 		if (!got_frame || frame.nb_samples <= 0)
 			continue;
 
-		auto output_buffer =
-			copy_interleave_frame(codec_context, frame,
-					      buffer, error);
-		if (output_buffer.IsNull()) {
-			/* this must be a serious error,
-			   e.g. OOM */
-			LogError(error);
-			return DecoderCommand::STOP;
-		}
-
-		if (skip_bytes > 0) {
-			if (skip_bytes >= output_buffer.size) {
-				skip_bytes -= output_buffer.size;
-				continue;
-			}
-
-			output_buffer.data =
-				(const uint8_t *)output_buffer.data + skip_bytes;
-			output_buffer.size -= skip_bytes;
-			skip_bytes = 0;
-		}
-
-		cmd = decoder_data(decoder, is,
-				   output_buffer.data, output_buffer.size,
-				   codec_context.bit_rate / 1000);
+		cmd = FfmpegSendFrame(client, is, codec_context,
+				      frame, skip_bytes,
+				      buffer);
 	}
+#endif
+
 	return cmd;
+}
+
+static DecoderCommand
+ffmpeg_send_packet(DecoderClient &client, InputStream &is,
+		   const AVPacket &packet,
+		   AVCodecContext &codec_context,
+		   const AVStream &stream,
+		   AVFrame &frame,
+		   uint64_t min_frame, size_t pcm_frame_size,
+		   FfmpegBuffer &buffer)
+{
+	return ffmpeg_send_packet(client, is,
+				  /* copy the AVPacket, because FFmpeg
+				     < 3.0 requires this */
+				  AVPacket(packet),
+				  codec_context, stream,
+				  frame, min_frame, pcm_frame_size,
+				  buffer);
 }
 
 gcc_const
@@ -294,15 +471,21 @@ ffmpeg_sample_format(enum AVSampleFormat sample_fmt)
 }
 
 static AVInputFormat *
-ffmpeg_probe(Decoder *decoder, InputStream &is)
+ffmpeg_probe(DecoderClient *client, InputStream &is)
 {
 	constexpr size_t BUFFER_SIZE = 16384;
 	constexpr size_t PADDING = 16;
 
 	unsigned char buffer[BUFFER_SIZE];
-	size_t nbytes = decoder_read(decoder, is, buffer, BUFFER_SIZE);
-	if (nbytes <= PADDING || !is.LockRewind(IgnoreError()))
+	size_t nbytes = decoder_read(client, is, buffer, BUFFER_SIZE);
+	if (nbytes <= PADDING)
 		return nullptr;
+
+	try {
+		is.LockRewind();
+	} catch (const std::runtime_error &) {
+		return nullptr;
+	}
 
 	/* some ffmpeg parsers (e.g. ac3_parser.c) read a few bytes
 	   beyond the declared buffer limit, which makes valgrind
@@ -370,7 +553,7 @@ FfmpegParseMetaData(const AVFormatContext &format_context, int audio_stream,
 }
 
 static void
-FfmpegParseMetaData(Decoder &decoder,
+FfmpegParseMetaData(DecoderClient &client,
 		    const AVFormatContext &format_context, int audio_stream)
 {
 	ReplayGainInfo rg;
@@ -382,10 +565,10 @@ FfmpegParseMetaData(Decoder &decoder,
 	FfmpegParseMetaData(format_context, audio_stream, rg, mr);
 
 	if (rg.IsDefined())
-		decoder_replay_gain(decoder, &rg);
+		client.SubmitReplayGain(&rg);
 
 	if (mr.IsDefined())
-		decoder_mixramp(decoder, std::move(mr));
+		client.SubmitMixRamp(std::move(mr));
 }
 
 static void
@@ -418,10 +601,10 @@ FfmpegScanTag(const AVFormatContext &format_context, int audio_stream,
 
 /**
  * Check if a new stream tag was received and pass it to
- * decoder_tag().
+ * DecoderClient::SubmitTag().
  */
 static void
-FfmpegCheckTag(Decoder &decoder, InputStream &is,
+FfmpegCheckTag(DecoderClient &client, InputStream &is,
 	       AVFormatContext &format_context, int audio_stream)
 {
 	AVStream &stream = *format_context.streams[audio_stream];
@@ -435,13 +618,13 @@ FfmpegCheckTag(Decoder &decoder, InputStream &is,
 	TagBuilder tag;
 	FfmpegScanTag(format_context, audio_stream, tag);
 	if (!tag.IsEmpty())
-		decoder_tag(decoder, is, tag.Commit());
+		client.SubmitTag(is, tag.Commit());
 }
 
 #endif
 
 static void
-FfmpegDecode(Decoder &decoder, InputStream &input,
+FfmpegDecode(DecoderClient &client, InputStream &input,
 	     AVFormatContext &format_context)
 {
 	const int find_result =
@@ -459,62 +642,81 @@ FfmpegDecode(Decoder &decoder, InputStream &input,
 
 	AVStream &av_stream = *format_context.streams[audio_stream];
 
-	AVCodecContext &codec_context = *av_stream.codec;
+#if LIBAVFORMAT_VERSION_INT < AV_VERSION_INT(57, 5, 0)
+	AVCodecContext *codec_context = av_stream.codec;
+#endif
+
+	const auto &codec_params = GetCodecParameters(av_stream);
 
 #if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(54, 25, 0)
 	const AVCodecDescriptor *codec_descriptor =
-		avcodec_descriptor_get(codec_context.codec_id);
+		avcodec_descriptor_get(codec_params.codec_id);
 	if (codec_descriptor != nullptr)
 		FormatDebug(ffmpeg_domain, "codec '%s'",
 			    codec_descriptor->name);
 #else
-	if (codec_context.codec_name[0] != 0)
+	if (codec_context->codec_name[0] != 0)
 		FormatDebug(ffmpeg_domain, "codec '%s'",
-			    codec_context.codec_name);
+			    codec_context->codec_name);
 #endif
 
-	AVCodec *codec = avcodec_find_decoder(codec_context.codec_id);
+	AVCodec *codec = avcodec_find_decoder(codec_params.codec_id);
 
 	if (!codec) {
 		LogError(ffmpeg_domain, "Unsupported audio codec");
 		return;
 	}
 
+#if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(57, 5, 0)
+	AVCodecContext *codec_context = avcodec_alloc_context3(codec);
+	if (codec_context == nullptr) {
+		LogError(ffmpeg_domain, "avcodec_alloc_context3() failed");
+		return;
+	}
+
+	AtScopeExit(&codec_context) {
+		avcodec_free_context(&codec_context);
+	};
+
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(57, 25, 0) /* FFmpeg 3.1 */
+	avcodec_parameters_to_context(codec_context, av_stream.codecpar);
+#endif
+#endif
+
 	const SampleFormat sample_format =
-		ffmpeg_sample_format(codec_context.sample_fmt);
+		ffmpeg_sample_format(GetSampleFormat(codec_params));
 	if (sample_format == SampleFormat::UNDEFINED) {
 		// (error message already done by ffmpeg_sample_format())
 		return;
 	}
 
-	Error error;
-	AudioFormat audio_format;
-	if (!audio_format_init_checked(audio_format,
-				       codec_context.sample_rate,
-				       sample_format,
-				       codec_context.channels, error)) {
-		LogError(error);
-		return;
-	}
+	const auto audio_format = CheckAudioFormat(codec_params.sample_rate,
+						   sample_format,
+						   codec_params.channels);
 
 	/* the audio format must be read from AVCodecContext by now,
 	   because avcodec_open() has been demonstrated to fill bogus
 	   values into AVCodecContext.channels - a change that will be
 	   reverted later by avcodec_decode_audio3() */
 
-	const int open_result = avcodec_open2(&codec_context, codec, nullptr);
+	const int open_result = avcodec_open2(codec_context, codec, nullptr);
 	if (open_result < 0) {
 		LogError(ffmpeg_domain, "Could not open codec");
 		return;
 	}
 
+#if LIBAVFORMAT_VERSION_INT < AV_VERSION_INT(57, 5, 0)
+	AtScopeExit(codec_context) {
+		avcodec_close(codec_context);
+	};
+#endif
+
 	const SignedSongTime total_time =
 		FromFfmpegTimeChecked(av_stream.duration, av_stream.time_base);
 
-	decoder_initialized(decoder, audio_format,
-			    input.IsSeekable(), total_time);
+	client.Ready(audio_format, input.IsSeekable(), total_time);
 
-	FfmpegParseMetaData(decoder, format_context, audio_stream);
+	FfmpegParseMetaData(client, format_context, audio_stream);
 
 #if LIBAVUTIL_VERSION_MAJOR >= 53
 	AVFrame *frame = av_frame_alloc();
@@ -526,15 +728,25 @@ FfmpegDecode(Decoder &decoder, InputStream &input,
 		return;
 	}
 
+	AtScopeExit(&frame) {
+#if LIBAVUTIL_VERSION_MAJOR >= 53
+		av_frame_free(&frame);
+#elif LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(54, 28, 0)
+		avcodec_free_frame(&frame);
+#else
+		av_free(frame);
+#endif
+	};
+
 	FfmpegBuffer interleaved_buffer;
 
 	uint64_t min_frame = 0;
 
-	DecoderCommand cmd = decoder_get_command(decoder);
+	DecoderCommand cmd = client.GetCommand();
 	while (cmd != DecoderCommand::STOP) {
 		if (cmd == DecoderCommand::SEEK) {
 			int64_t where =
-				ToFfmpegTime(decoder_seek_time(decoder),
+				ToFfmpegTime(client.GetSeekTime(),
 					     av_stream.time_base) +
 				start_time_fallback(av_stream);
 
@@ -543,11 +755,11 @@ FfmpegDecode(Decoder &decoder, InputStream &input,
 			   stamp, not after */
 			if (av_seek_frame(&format_context, audio_stream, where,
 					  AVSEEK_FLAG_ANY|AVSEEK_FLAG_BACKWARD) < 0)
-				decoder_seek_error(decoder);
+				client.SeekError();
 			else {
-				avcodec_flush_buffers(&codec_context);
-				min_frame = decoder_seek_where_frame(decoder);
-				decoder_command_finished(decoder);
+				avcodec_flush_buffers(codec_context);
+				min_frame = client.GetSeekFrame();
+				client.CommandFinished();
 			}
 		}
 
@@ -557,59 +769,59 @@ FfmpegDecode(Decoder &decoder, InputStream &input,
 			break;
 
 #if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(56, 1, 0)
-		FfmpegCheckTag(decoder, input, format_context, audio_stream);
+		FfmpegCheckTag(client, input, format_context, audio_stream);
 #endif
 
-		if (packet.stream_index == audio_stream) {
-			cmd = ffmpeg_send_packet(decoder, input,
-						 packet, codec_context,
+		if (packet.size > 0 && packet.stream_index == audio_stream) {
+			cmd = ffmpeg_send_packet(client, input,
+						 packet,
+						 *codec_context,
 						 av_stream,
 						 *frame,
 						 min_frame, audio_format.GetFrameSize(),
 						 interleaved_buffer);
 			min_frame = 0;
 		} else
-			cmd = decoder_get_command(decoder);
+			cmd = client.GetCommand();
 
-		av_free_packet(&packet);
-	}
-
-#if LIBAVUTIL_VERSION_MAJOR >= 53
-	av_frame_free(&frame);
-#elif LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(54, 28, 0)
-	avcodec_free_frame(&frame);
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(56, 25, 100)
+		av_packet_unref(&packet);
 #else
-	av_free(frame);
+		av_free_packet(&packet);
 #endif
-
-	avcodec_close(&codec_context);
+	}
 }
 
 static void
-ffmpeg_decode(Decoder &decoder, InputStream &input)
+ffmpeg_decode(DecoderClient &client, InputStream &input)
 {
-	AVInputFormat *input_format = ffmpeg_probe(&decoder, input);
+	AVInputFormat *input_format = ffmpeg_probe(&client, input);
 	if (input_format == nullptr)
 		return;
 
 	FormatDebug(ffmpeg_domain, "detected input format '%s' (%s)",
 		    input_format->name, input_format->long_name);
 
-	AvioStream stream(&decoder, input);
+	AvioStream stream(&client, input);
 	if (!stream.Open()) {
 		LogError(ffmpeg_domain, "Failed to open stream");
 		return;
 	}
 
-	AVFormatContext *format_context =
-		FfmpegOpenInput(stream.io, input.GetURI(), input_format);
-	if (format_context == nullptr) {
-		LogError(ffmpeg_domain, "Open failed");
+	AVFormatContext *format_context;
+	try {
+		format_context =FfmpegOpenInput(stream.io, input.GetURI(),
+						input_format);
+	} catch (const std::runtime_error &e) {
+		LogError(e);
 		return;
 	}
 
-	FfmpegDecode(decoder, input, *format_context);
-	avformat_close_input(&format_context);
+	AtScopeExit(&format_context) {
+		avformat_close_input(&format_context);
+	};
+
+	FfmpegDecode(client, input, *format_context);
 }
 
 static bool
@@ -648,14 +860,18 @@ ffmpeg_scan_stream(InputStream &is,
 	if (!stream.Open())
 		return false;
 
-	AVFormatContext *f =
-		FfmpegOpenInput(stream.io, is.GetURI(), input_format);
-	if (f == nullptr)
+	AVFormatContext *f;
+	try {
+		f = FfmpegOpenInput(stream.io, is.GetURI(), input_format);
+	} catch (const std::runtime_error &) {
 		return false;
+	}
 
-	bool result = FfmpegScanStream(*f, handler, handler_ctx);
-	avformat_close_input(&f);
-	return result;
+	AtScopeExit(&f) {
+		avformat_close_input(&f);
+	};
+
+	return FfmpegScanStream(*f, handler, handler_ctx);
 }
 
 /**
@@ -778,7 +994,7 @@ static const char *const ffmpeg_mime_types[] = {
 const struct DecoderPlugin ffmpeg_decoder_plugin = {
 	"ffmpeg",
 	ffmpeg_init,
-	nullptr,
+	ffmpeg_finish,
 	ffmpeg_decode,
 	nullptr,
 	nullptr,

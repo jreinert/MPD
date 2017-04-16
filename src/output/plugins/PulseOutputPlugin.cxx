@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -22,11 +22,11 @@
 #include "lib/pulse/Domain.hxx"
 #include "lib/pulse/Error.hxx"
 #include "lib/pulse/LogError.hxx"
+#include "lib/pulse/LockGuard.hxx"
 #include "../OutputAPI.hxx"
 #include "../Wrapper.hxx"
 #include "mixer/MixerList.hxx"
 #include "mixer/plugins/PulseMixerPlugin.hxx"
-#include "util/Error.hxx"
 #include "Log.hxx"
 
 #include <pulse/thread-mainloop.h>
@@ -35,6 +35,8 @@
 #include <pulse/introspect.h>
 #include <pulse/subscribe.h>
 #include <pulse/version.h>
+
+#include <stdexcept>
 
 #include <assert.h>
 #include <stddef.h>
@@ -51,18 +53,15 @@ class PulseOutput {
 	const char *server;
 	const char *sink;
 
-	PulseMixer *mixer;
+	PulseMixer *mixer = nullptr;
 
-	struct pa_threaded_mainloop *mainloop;
+	struct pa_threaded_mainloop *mainloop = nullptr;
 	struct pa_context *context;
-	struct pa_stream *stream;
+	struct pa_stream *stream = nullptr;
 
 	size_t writable;
 
-	PulseOutput()
-		:base(pulse_output_plugin),
-		 mixer(nullptr),
-		 mainloop(nullptr), stream(nullptr) {}
+	explicit PulseOutput(const ConfigBlock &block);
 
 public:
 	void SetMixer(PulseMixer &_mixer);
@@ -73,14 +72,10 @@ public:
 		mixer = nullptr;
 	}
 
-	bool SetVolume(const pa_cvolume &volume, Error &error);
+	void SetVolume(const pa_cvolume &volume);
 
-	void Lock() {
-		pa_threaded_mainloop_lock(mainloop);
-	}
-
-	void Unlock() {
-		pa_threaded_mainloop_unlock(mainloop);
+	struct pa_threaded_mainloop *GetMainloop() {
+		return mainloop;
 	}
 
 	void OnContextStateChanged(pa_context_state_t new_state);
@@ -98,17 +93,17 @@ public:
 	gcc_const
 	static bool TestDefaultDevice();
 
-	bool Configure(const ConfigBlock &block, Error &error);
-	static PulseOutput *Create(const ConfigBlock &block, Error &error);
+	static PulseOutput *Create(EventLoop &event_loop,
+				   const ConfigBlock &block);
 
-	bool Enable(Error &error);
+	void Enable();
 	void Disable();
 
-	bool Open(AudioFormat &audio_format, Error &error);
+	void Open(AudioFormat &audio_format);
 	void Close();
 
-	unsigned Delay();
-	size_t Play(const void *chunk, size_t size, Error &error);
+	std::chrono::steady_clock::duration Delay();
+	size_t Play(const void *chunk, size_t size);
 	void Cancel();
 	bool Pause();
 
@@ -116,18 +111,18 @@ private:
 	/**
 	 * Attempt to connect asynchronously to the PulseAudio server.
 	 *
-	 * @return true on success, false on error
+	 * Throws #std::runtime_error on error.
 	 */
-	bool Connect(Error &error);
+	void Connect();
 
 	/**
 	 * Create, set up and connect a context.
 	 *
 	 * Caller must lock the main loop.
 	 *
-	 * @return true on success, false on error
+	 * Throws #std::runtime_error on error.
 	 */
-	bool SetupContext(Error &error);
+	void SetupContext();
 
 	/**
 	 * Frees and clears the context.
@@ -147,18 +142,18 @@ private:
 	 *
 	 * Caller must lock the main loop.
 	 *
-	 * @return true on success, false on error
+	 * Throws #std::runtime_error on error.
 	 */
-	bool WaitConnection(Error &error);
+	void WaitConnection();
 
 	/**
 	 * Create, set up and connect a context.
 	 *
 	 * Caller must lock the main loop.
 	 *
-	 * @return true on success, false on error
+	 * Throws #std::runtime_error on error.
 	 */
-	bool SetupStream(const pa_sample_spec &ss, Error &error);
+	void SetupStream(const pa_sample_spec &ss);
 
 	/**
 	 * Frees and clears the stream.
@@ -170,26 +165,32 @@ private:
 	 * not.  The mainloop must be locked before calling this
 	 * function.
 	 *
-	 * @return true on success, false on error
+	 * Throws #std::runtime_error on error.
 	 */
-	bool WaitStream(Error &error);
+	void WaitStream();
 
 	/**
 	 * Sets cork mode on the stream.
+	 *
+	 * Throws #std::runtime_error on error.
 	 */
-	bool StreamPause(bool pause, Error &error);
+	void StreamPause(bool pause);
 };
 
-void
-pulse_output_lock(PulseOutput &po)
+PulseOutput::PulseOutput(const ConfigBlock &block)
+	:base(pulse_output_plugin, block),
+	 name(block.GetBlockValue("name", "mpd_pulse")),
+	 server(block.GetBlockValue("server")),
+	 sink(block.GetBlockValue("sink"))
 {
-	po.Lock();
+	setenv("PULSE_PROP_media.role", "music", true);
+	setenv("PULSE_PROP_application.icon_name", "mpd", true);
 }
 
-void
-pulse_output_unlock(PulseOutput &po)
+struct pa_threaded_mainloop *
+pulse_output_get_mainloop(PulseOutput &po)
 {
-	po.Unlock();
+	return po.GetMainloop();
 }
 
 inline void
@@ -202,7 +203,7 @@ PulseOutput::SetMixer(PulseMixer &_mixer)
 	if (mainloop == nullptr)
 		return;
 
-	pa_threaded_mainloop_lock(mainloop);
+	Pulse::LockGuard lock(mainloop);
 
 	if (context != nullptr &&
 	    pa_context_get_state(context) == PA_CONTEXT_READY) {
@@ -212,8 +213,6 @@ PulseOutput::SetMixer(PulseMixer &_mixer)
 		    pa_stream_get_state(stream) == PA_STREAM_READY)
 			pulse_mixer_on_change(_mixer, context, stream);
 	}
-
-	pa_threaded_mainloop_unlock(mainloop);
 }
 
 void
@@ -228,34 +227,27 @@ pulse_output_clear_mixer(PulseOutput &po, PulseMixer &pm)
 	po.ClearMixer(pm);
 }
 
-inline bool
-PulseOutput::SetVolume(const pa_cvolume &volume, Error &error)
+inline void
+PulseOutput::SetVolume(const pa_cvolume &volume)
 {
 	if (context == nullptr || stream == nullptr ||
-	    pa_stream_get_state(stream) != PA_STREAM_READY) {
-		error.Set(pulse_domain, "disconnected");
-		return false;
-	}
+	    pa_stream_get_state(stream) != PA_STREAM_READY)
+		throw std::runtime_error("disconnected");
 
 	pa_operation *o =
 		pa_context_set_sink_input_volume(context,
 						 pa_stream_get_index(stream),
 						 &volume, nullptr, nullptr);
-	if (o == nullptr) {
-		SetPulseError(error, context,
-			      "failed to set PulseAudio volume");
-		return false;
-	}
+	if (o == nullptr)
+		throw std::runtime_error("failed to set PulseAudio volume");
 
 	pa_operation_unref(o);
-	return true;
 }
 
-bool
-pulse_output_set_volume(PulseOutput &po, const pa_cvolume *volume,
-			Error &error)
+void
+pulse_output_set_volume(PulseOutput &po, const pa_cvolume *volume)
 {
-	return po.SetVolume(*volume, error);
+	return po.SetVolume(*volume);
 }
 
 /**
@@ -361,19 +353,15 @@ pulse_output_subscribe_cb(gcc_unused pa_context *context,
 	po.OnServerLayoutChanged(t, idx);
 }
 
-inline bool
-PulseOutput::Connect(Error &error)
+inline void
+PulseOutput::Connect()
 {
 	assert(context != nullptr);
 
 	if (pa_context_connect(context, server,
-			       (pa_context_flags_t)0, nullptr) < 0) {
-		SetPulseError(error, context,
-			      "pa_context_connect() has failed");
-		return false;
-	}
-
-	return true;
+			       (pa_context_flags_t)0, nullptr) < 0)
+		throw MakePulseError(context,
+				     "pa_context_connect() has failed");
 }
 
 void
@@ -404,72 +392,45 @@ PulseOutput::DeleteContext()
 	context = nullptr;
 }
 
-bool
-PulseOutput::SetupContext(Error &error)
+void
+PulseOutput::SetupContext()
 {
 	assert(mainloop != nullptr);
 
 	context = pa_context_new(pa_threaded_mainloop_get_api(mainloop),
 				 MPD_PULSE_NAME);
-	if (context == nullptr) {
-		error.Set(pulse_domain, "pa_context_new() has failed");
-		return false;
-	}
+	if (context == nullptr)
+		throw std::runtime_error("pa_context_new() has failed");
 
 	pa_context_set_state_callback(context,
 				      pulse_output_context_state_cb, this);
 	pa_context_set_subscribe_callback(context,
 					  pulse_output_subscribe_cb, this);
 
-	if (!Connect(error)) {
+	try {
+		Connect();
+	} catch (...) {
 		DeleteContext();
-		return false;
+		throw;
 	}
-
-	return true;
-}
-
-inline bool
-PulseOutput::Configure(const ConfigBlock &block, Error &error)
-{
-	if (!base.Configure(block, error))
-		return false;
-
-	name = block.GetBlockValue("name", "mpd_pulse");
-	server = block.GetBlockValue("server");
-	sink = block.GetBlockValue("sink");
-
-	return true;
 }
 
 PulseOutput *
-PulseOutput::Create(const ConfigBlock &block, Error &error)
+PulseOutput::Create(EventLoop &, const ConfigBlock &block)
 {
-	setenv("PULSE_PROP_media.role", "music", true);
-	setenv("PULSE_PROP_application.icon_name", "mpd", true);
-
-	auto *po = new PulseOutput();
-	if (!po->Configure(block, error)) {
-		delete po;
-		return nullptr;
-	}
-
-	return po;
+	return new PulseOutput(block);
 }
 
-inline bool
-PulseOutput::Enable(Error &error)
+inline void
+PulseOutput::Enable()
 {
 	assert(mainloop == nullptr);
 
 	/* create the libpulse mainloop and start the thread */
 
 	mainloop = pa_threaded_mainloop_new();
-	if (mainloop == nullptr) {
-		error.Set(pulse_domain,
-			  "pa_threaded_mainloop_new() has failed");
-		return false;
-	}
+	if (mainloop == nullptr)
+		throw std::runtime_error("pa_threaded_mainloop_new() has failed");
 
 	pa_threaded_mainloop_lock(mainloop);
 
@@ -478,24 +439,22 @@ PulseOutput::Enable(Error &error)
 		pa_threaded_mainloop_free(mainloop);
 		mainloop = nullptr;
 
-		error.Set(pulse_domain,
-			  "pa_threaded_mainloop_start() has failed");
-		return false;
+		throw std::runtime_error("pa_threaded_mainloop_start() has failed");
 	}
 
 	/* create the libpulse context and connect it */
 
-	if (!SetupContext(error)) {
+	try {
+		SetupContext();
+	} catch (...) {
 		pa_threaded_mainloop_unlock(mainloop);
 		pa_threaded_mainloop_stop(mainloop);
 		pa_threaded_mainloop_free(mainloop);
 		mainloop = nullptr;
-		return false;
+		throw;
 	}
 
 	pa_threaded_mainloop_unlock(mainloop);
-
-	return true;
 }
 
 inline void
@@ -510,30 +469,33 @@ PulseOutput::Disable()
 	mainloop = nullptr;
 }
 
-bool
-PulseOutput::WaitConnection(Error &error)
+void
+PulseOutput::WaitConnection()
 {
 	assert(mainloop != nullptr);
 
 	pa_context_state_t state;
 
-	if (context == nullptr && !SetupContext(error))
-		return false;
+	if (context == nullptr)
+		SetupContext();
 
 	while (true) {
 		state = pa_context_get_state(context);
 		switch (state) {
 		case PA_CONTEXT_READY:
 			/* nothing to do */
-			return true;
+			return;
 
 		case PA_CONTEXT_UNCONNECTED:
 		case PA_CONTEXT_TERMINATED:
 		case PA_CONTEXT_FAILED:
 			/* failure */
-			SetPulseError(error, context, "failed to connect");
-			DeleteContext();
-			return false;
+			{
+				auto e = MakePulseError(context,
+							"failed to connect");
+				DeleteContext();
+				throw e;
+			}
 
 		case PA_CONTEXT_CONNECTING:
 		case PA_CONTEXT_AUTHORIZING:
@@ -620,8 +582,8 @@ pulse_output_stream_write_cb(gcc_unused pa_stream *stream, size_t nbytes,
 	return po.OnStreamWrite(nbytes);
 }
 
-inline bool
-PulseOutput::SetupStream(const pa_sample_spec &ss, Error &error)
+inline void
+PulseOutput::SetupStream(const pa_sample_spec &ss)
 {
 	assert(context != nullptr);
 
@@ -630,11 +592,9 @@ PulseOutput::SetupStream(const pa_sample_spec &ss, Error &error)
 	pa_channel_map_init_auto(&chan_map, ss.channels,
 				 PA_CHANNEL_MAP_WAVEEX);
 	stream = pa_stream_new(context, name, &ss, &chan_map);
-	if (stream == nullptr) {
-		SetPulseError(error, context,
-			      "pa_stream_new() has failed");
-		return false;
-	}
+	if (stream == nullptr)
+		throw MakePulseError(context,
+				     "pa_stream_new() has failed");
 
 	pa_stream_set_suspended_callback(stream,
 					 pulse_output_stream_suspended_cb,
@@ -644,16 +604,14 @@ PulseOutput::SetupStream(const pa_sample_spec &ss, Error &error)
 				     pulse_output_stream_state_cb, this);
 	pa_stream_set_write_callback(stream,
 				     pulse_output_stream_write_cb, this);
-
-	return true;
 }
 
-inline bool
-PulseOutput::Open(AudioFormat &audio_format, Error &error)
+inline void
+PulseOutput::Open(AudioFormat &audio_format)
 {
 	assert(mainloop != nullptr);
 
-	pa_threaded_mainloop_lock(mainloop);
+	Pulse::LockGuard lock(mainloop);
 
 	if (context != nullptr) {
 		switch (pa_context_get_state(context)) {
@@ -674,26 +632,38 @@ PulseOutput::Open(AudioFormat &audio_format, Error &error)
 		}
 	}
 
-	if (!WaitConnection(error)) {
-		pa_threaded_mainloop_unlock(mainloop);
-		return false;
-	}
+	WaitConnection();
 
-	/* MPD doesn't support the other pulseaudio sample formats, so
-	   we just force MPD to send us everything as 16 bit */
-	audio_format.format = SampleFormat::S16;
+	/* Use the sample formats that our version of PulseAudio and MPD
+	   have in common, otherwise force MPD to send 16 bit */
 
 	pa_sample_spec ss;
-	ss.format = PA_SAMPLE_S16NE;
+
+	switch (audio_format.format) {
+	case SampleFormat::FLOAT:
+		ss.format = PA_SAMPLE_FLOAT32NE;
+		break;
+	case SampleFormat::S32:
+		ss.format = PA_SAMPLE_S32NE;
+		break;
+	case SampleFormat::S24_P32:
+		ss.format = PA_SAMPLE_S24_32NE;
+		break;
+	case SampleFormat::S16:
+		ss.format = PA_SAMPLE_S16NE;
+		break;
+	default:
+		audio_format.format = SampleFormat::S16;
+		ss.format = PA_SAMPLE_S16NE;
+		break;
+	}
+
 	ss.rate = audio_format.sample_rate;
 	ss.channels = audio_format.channels;
 
 	/* create a stream .. */
 
-	if (!SetupStream(ss, error)) {
-		pa_threaded_mainloop_unlock(mainloop);
-		return false;
-	}
+	SetupStream(ss);
 
 	/* .. and connect it (asynchronously) */
 
@@ -702,14 +672,9 @@ PulseOutput::Open(AudioFormat &audio_format, Error &error)
 				       nullptr, nullptr) < 0) {
 		DeleteStream();
 
-		SetPulseError(error, context,
-			      "pa_stream_connect_playback() has failed");
-		pa_threaded_mainloop_unlock(mainloop);
-		return false;
+		throw MakePulseError(context,
+				     "pa_stream_connect_playback() has failed");
 	}
-
-	pa_threaded_mainloop_unlock(mainloop);
-	return true;
 }
 
 inline void
@@ -717,7 +682,7 @@ PulseOutput::Close()
 {
 	assert(mainloop != nullptr);
 
-	pa_threaded_mainloop_lock(mainloop);
+	Pulse::LockGuard lock(mainloop);
 
 	if (pa_stream_get_state(stream) == PA_STREAM_READY) {
 		pa_operation *o =
@@ -735,24 +700,21 @@ PulseOutput::Close()
 	if (context != nullptr &&
 	    pa_context_get_state(context) != PA_CONTEXT_READY)
 		DeleteContext();
-
-	pa_threaded_mainloop_unlock(mainloop);
 }
 
-bool
-PulseOutput::WaitStream(Error &error)
+void
+PulseOutput::WaitStream()
 {
 	while (true) {
 		switch (pa_stream_get_state(stream)) {
 		case PA_STREAM_READY:
-			return true;
+			return;
 
 		case PA_STREAM_FAILED:
 		case PA_STREAM_TERMINATED:
 		case PA_STREAM_UNCONNECTED:
-			SetPulseError(error, context,
-				      "failed to connect the stream");
-			return false;
+			throw MakePulseError(context,
+					     "failed to connect the stream");
 
 		case PA_STREAM_CREATING:
 			pa_threaded_mainloop_wait(mainloop);
@@ -761,8 +723,8 @@ PulseOutput::WaitStream(Error &error)
 	}
 }
 
-bool
-PulseOutput::StreamPause(bool pause, Error &error)
+void
+PulseOutput::StreamPause(bool pause)
 {
 	assert(mainloop != nullptr);
 	assert(context != nullptr);
@@ -770,77 +732,58 @@ PulseOutput::StreamPause(bool pause, Error &error)
 
 	pa_operation *o = pa_stream_cork(stream, pause,
 					 pulse_output_stream_success_cb, this);
-	if (o == nullptr) {
-		SetPulseError(error, context,
-			      "pa_stream_cork() has failed");
-		return false;
-	}
+	if (o == nullptr)
+		throw MakePulseError(context,
+				     "pa_stream_cork() has failed");
 
-	if (!pulse_wait_for_operation(mainloop, o)) {
-		SetPulseError(error, context,
-			      "pa_stream_cork() has failed");
-		return false;
-	}
-
-	return true;
+	if (!pulse_wait_for_operation(mainloop, o))
+		throw MakePulseError(context,
+				     "pa_stream_cork() has failed");
 }
 
-inline unsigned
+inline std::chrono::steady_clock::duration
 PulseOutput::Delay()
 {
-	pa_threaded_mainloop_lock(mainloop);
+	Pulse::LockGuard lock(mainloop);
 
-	unsigned result = 0;
+	auto result = std::chrono::steady_clock::duration::zero();
 	if (base.pause && pa_stream_is_corked(stream) &&
 	    pa_stream_get_state(stream) == PA_STREAM_READY)
 		/* idle while paused */
-		result = 1000;
-
-	pa_threaded_mainloop_unlock(mainloop);
+		result = std::chrono::seconds(1);
 
 	return result;
 }
 
 inline size_t
-PulseOutput::Play(const void *chunk, size_t size, Error &error)
+PulseOutput::Play(const void *chunk, size_t size)
 {
 	assert(mainloop != nullptr);
 	assert(stream != nullptr);
 
-	pa_threaded_mainloop_lock(mainloop);
+	Pulse::LockGuard lock(mainloop);
 
 	/* check if the stream is (already) connected */
 
-	if (!WaitStream(error)) {
-		pa_threaded_mainloop_unlock(mainloop);
-		return 0;
-	}
+	WaitStream();
 
 	assert(context != nullptr);
 
 	/* unpause if previously paused */
 
-	if (pa_stream_is_corked(stream) && !StreamPause(false, error)) {
-		pa_threaded_mainloop_unlock(mainloop);
-		return 0;
-	}
+	if (pa_stream_is_corked(stream))
+		StreamPause(false);
 
 	/* wait until the server allows us to write */
 
 	while (writable == 0) {
-		if (pa_stream_is_suspended(stream)) {
-			pa_threaded_mainloop_unlock(mainloop);
-			error.Set(pulse_domain, "suspended");
-			return 0;
-		}
+		if (pa_stream_is_suspended(stream))
+			throw std::runtime_error("suspended");
 
 		pa_threaded_mainloop_wait(mainloop);
 
-		if (pa_stream_get_state(stream) != PA_STREAM_READY) {
-			pa_threaded_mainloop_unlock(mainloop);
-			error.Set(pulse_domain, "disconnected");
-			return 0;
-		}
+		if (pa_stream_get_state(stream) != PA_STREAM_READY)
+			throw std::runtime_error("disconnected");
 	}
 
 	/* now write */
@@ -853,11 +796,8 @@ PulseOutput::Play(const void *chunk, size_t size, Error &error)
 
 	int result = pa_stream_write(stream, chunk, size, nullptr,
 				     0, PA_SEEK_RELATIVE);
-	pa_threaded_mainloop_unlock(mainloop);
-	if (result < 0) {
-		SetPulseError(error, context, "pa_stream_write() failed");
-		return 0;
-	}
+	if (result < 0)
+		throw MakePulseError(context, "pa_stream_write() failed");
 
 	return size;
 }
@@ -868,12 +808,11 @@ PulseOutput::Cancel()
 	assert(mainloop != nullptr);
 	assert(stream != nullptr);
 
-	pa_threaded_mainloop_lock(mainloop);
+	Pulse::LockGuard lock(mainloop);
 
 	if (pa_stream_get_state(stream) != PA_STREAM_READY) {
 		/* no need to flush when the stream isn't connected
 		   yet */
-		pa_threaded_mainloop_unlock(mainloop);
 		return;
 	}
 
@@ -884,12 +823,10 @@ PulseOutput::Cancel()
 					  this);
 	if (o == nullptr) {
 		LogPulseError(context, "pa_stream_flush() has failed");
-		pa_threaded_mainloop_unlock(mainloop);
 		return;
 	}
 
 	pulse_wait_for_operation(mainloop, o);
-	pa_threaded_mainloop_unlock(mainloop);
 }
 
 inline bool
@@ -898,42 +835,31 @@ PulseOutput::Pause()
 	assert(mainloop != nullptr);
 	assert(stream != nullptr);
 
-	pa_threaded_mainloop_lock(mainloop);
+	Pulse::LockGuard lock(mainloop);
 
 	/* check if the stream is (already/still) connected */
 
-	Error error;
-	if (!WaitStream(error)) {
-		pa_threaded_mainloop_unlock(mainloop);
-		LogError(error);
-		return false;
-	}
+	WaitStream();
 
 	assert(context != nullptr);
 
 	/* cork the stream */
 
-	if (!pa_stream_is_corked(stream) && !StreamPause(true, error)) {
-		pa_threaded_mainloop_unlock(mainloop);
-		LogError(error);
-		return false;
-	}
+	if (!pa_stream_is_corked(stream))
+		StreamPause(true);
 
-	pa_threaded_mainloop_unlock(mainloop);
 	return true;
 }
 
 inline bool
 PulseOutput::TestDefaultDevice()
-{
+try {
 	const ConfigBlock empty;
-	PulseOutput *po = PulseOutput::Create(empty, IgnoreError());
-	if (po == nullptr)
-		return false;
-
-	bool success = po->WaitConnection(IgnoreError());
-	delete po;
-	return success;
+	PulseOutput po(empty);
+	po.WaitConnection();
+	return true;
+} catch (const std::runtime_error &e) {
+	return false;
 }
 
 static bool

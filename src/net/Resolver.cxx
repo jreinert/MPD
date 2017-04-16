@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -19,27 +19,24 @@
 
 #include "config.h"
 #include "Resolver.hxx"
-#include "SocketAddress.hxx"
-#include "util/Error.hxx"
-#include "util/Domain.hxx"
+#include "util/RuntimeError.hxx"
 
 #include <string>
 
 #ifdef WIN32
 #include <ws2tcpip.h>
 #else
+#include <sys/types.h>
+#include <sys/socket.h>
 #include <netdb.h>
 #endif
 
 #include <string.h>
 #include <stdio.h>
 
-const Domain resolver_domain("resolver");
-
 struct addrinfo *
 resolve_host_port(const char *host_port, unsigned default_port,
-		  int flags, int socktype,
-		  Error &error)
+		  int flags, int socktype)
 {
 	std::string p(host_port);
 	const char *host = p.c_str(), *port = nullptr;
@@ -86,12 +83,9 @@ resolve_host_port(const char *host_port, unsigned default_port,
 
 	struct addrinfo *ai;
 	int ret = getaddrinfo(host, port, &hints, &ai);
-	if (ret != 0) {
-		error.Format(resolver_domain, ret,
-			     "Failed to look up '%s': %s",
-			     host_port, gai_strerror(ret));
-		return nullptr;
-	}
+	if (ret != 0)
+		throw FormatRuntimeError("Failed to look up '%s': %s",
+					 host_port, gai_strerror(ret));
 
 	return ai;
 }

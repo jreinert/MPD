@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -24,11 +24,10 @@
 #include "input/Offset.hxx"
 #include "Compiler.h"
 
-#include <stddef.h>
 #include <stdint.h>
 
-struct Decoder;
 struct TagHandler;
+class DecoderClient;
 class InputStream;
 
 struct DsdId {
@@ -61,11 +60,11 @@ public:
 };
 
 bool
-dsdlib_skip_to(Decoder *decoder, InputStream &is,
+dsdlib_skip_to(DecoderClient *client, InputStream &is,
 	       offset_type offset);
 
 bool
-dsdlib_skip(Decoder *decoder, InputStream &is,
+dsdlib_skip(DecoderClient *client, InputStream &is,
 	    offset_type delta);
 
 /**

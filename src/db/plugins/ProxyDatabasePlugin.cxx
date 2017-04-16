@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -31,10 +31,11 @@
 #include "SongFilter.hxx"
 #include "Compiler.h"
 #include "config/Block.hxx"
-#include "tag/TagBuilder.hxx"
+#include "tag/Builder.hxx"
 #include "tag/Tag.hxx"
-#include "util/Error.hxx"
-#include "util/Domain.hxx"
+#include "tag/Mask.hxx"
+#include "util/ScopeExit.hxx"
+#include "util/RuntimeError.hxx"
 #include "protocol/Ack.hxx"
 #include "event/SocketMonitor.hxx"
 #include "event/IdleMonitor.hxx"
@@ -46,6 +47,18 @@
 #include <cassert>
 #include <string>
 #include <list>
+
+class LibmpdclientError final : public std::runtime_error {
+	enum mpd_error code;
+
+public:
+	LibmpdclientError(enum mpd_error _code, const char *_msg)
+		:std::runtime_error(_msg), code(_code) {}
+
+	enum mpd_error GetCode() const {
+		return code;
+	}
+};
 
 class ProxySong : public LightSong {
 	Tag tag2;
@@ -69,14 +82,14 @@ public:
 class ProxyDatabase final : public Database, SocketMonitor, IdleMonitor {
 	DatabaseListener &listener;
 
-	std::string host;
-	unsigned port;
-	bool keepalive;
+	const std::string host;
+	const unsigned port;
+	const bool keepalive;
 
 	struct mpd_connection *connection;
 
 	/* this is mutable because GetStats() must be "const" */
-	mutable time_t update_stamp;
+	mutable std::chrono::system_clock::time_point update_stamp;
 
 	/**
 	 * The libmpdclient idle mask that was removed from the other
@@ -91,60 +104,47 @@ class ProxyDatabase final : public Database, SocketMonitor, IdleMonitor {
 	bool is_idle;
 
 public:
-	ProxyDatabase(EventLoop &_loop, DatabaseListener &_listener)
-		:Database(proxy_db_plugin),
-		 SocketMonitor(_loop), IdleMonitor(_loop),
-		 listener(_listener) {}
+	ProxyDatabase(EventLoop &_loop, DatabaseListener &_listener,
+		      const ConfigBlock &block);
 
 	static Database *Create(EventLoop &loop, DatabaseListener &listener,
-				const ConfigBlock &block,
-				Error &error);
+				const ConfigBlock &block);
 
-	virtual bool Open(Error &error) override;
-	virtual void Close() override;
-	virtual const LightSong *GetSong(const char *uri_utf8,
-				     Error &error) const override;
+	void Open() override;
+	void Close() override;
+	const LightSong *GetSong(const char *uri_utf8) const override;
 	void ReturnSong(const LightSong *song) const override;
 
-	virtual bool Visit(const DatabaseSelection &selection,
-			   VisitDirectory visit_directory,
-			   VisitSong visit_song,
-			   VisitPlaylist visit_playlist,
-			   Error &error) const override;
+	void Visit(const DatabaseSelection &selection,
+		   VisitDirectory visit_directory,
+		   VisitSong visit_song,
+		   VisitPlaylist visit_playlist) const override;
 
-	virtual bool VisitUniqueTags(const DatabaseSelection &selection,
-				     TagType tag_type, tag_mask_t group_mask,
-				     VisitTag visit_tag,
-				     Error &error) const override;
+	void VisitUniqueTags(const DatabaseSelection &selection,
+			     TagType tag_type, TagMask group_mask,
+			     VisitTag visit_tag) const override;
 
-	virtual bool GetStats(const DatabaseSelection &selection,
-			      DatabaseStats &stats,
-			      Error &error) const override;
+	DatabaseStats GetStats(const DatabaseSelection &selection) const override;
 
-	virtual unsigned Update(const char *uri_utf8, bool discard,
-				Error &error) override;
+	unsigned Update(const char *uri_utf8, bool discard) override;
 
-	virtual time_t GetUpdateStamp() const override {
+	std::chrono::system_clock::time_point GetUpdateStamp() const override {
 		return update_stamp;
 	}
 
 private:
-	bool Configure(const ConfigBlock &block, Error &error);
-
-	bool Connect(Error &error);
-	bool CheckConnection(Error &error);
-	bool EnsureConnected(Error &error);
+	void Connect();
+	void CheckConnection();
+	void EnsureConnected();
 
 	void Disconnect();
 
 	/* virtual methods from SocketMonitor */
-	virtual bool OnSocketReady(unsigned flags) override;
+	bool OnSocketReady(unsigned flags) override;
 
 	/* virtual methods from IdleMonitor */
-	virtual void OnIdle() override;
+	void OnIdle() override;
 };
-
-static constexpr Domain libmpdclient_domain("libmpdclient");
 
 static constexpr struct {
 	TagType d;
@@ -226,27 +226,34 @@ Convert(TagType tag_type)
 	return MPD_TAG_COUNT;
 }
 
-static bool
-CheckError(struct mpd_connection *connection, Error &error)
+static void
+ThrowError(struct mpd_connection *connection)
 {
 	const auto code = mpd_connection_get_error(connection);
-	if (code == MPD_ERROR_SUCCESS)
-		return true;
+
+	AtScopeExit(connection) {
+		mpd_connection_clear_error(connection);
+	};
 
 	if (code == MPD_ERROR_SERVER) {
 		/* libmpdclient's "enum mpd_server_error" is the same
 		   as our "enum ack" */
 		const auto server_error =
 			mpd_connection_get_server_error(connection);
-		error.Set(ack_domain, (int)server_error,
-			  mpd_connection_get_error_message(connection));
+		throw ProtocolError((enum ack)server_error,
+				    mpd_connection_get_error_message(connection));
 	} else {
-		error.Set(libmpdclient_domain, (int)code,
-			  mpd_connection_get_error_message(connection));
+		throw LibmpdclientError(code,
+					mpd_connection_get_error_message(connection));
 	}
+}
 
-	mpd_connection_clear_error(connection);
-	return false;
+static void
+CheckError(struct mpd_connection *connection)
+{
+	const auto code = mpd_connection_get_error(connection);
+	if (code != MPD_ERROR_SUCCESS)
+		ThrowError(connection);
 }
 
 static bool
@@ -319,38 +326,36 @@ SendConstraints(mpd_connection *connection, const DatabaseSelection &selection)
 	return true;
 }
 
+ProxyDatabase::ProxyDatabase(EventLoop &_loop, DatabaseListener &_listener,
+			     const ConfigBlock &block)
+	:Database(proxy_db_plugin),
+	 SocketMonitor(_loop), IdleMonitor(_loop),
+	 listener(_listener),
+	 host(block.GetBlockValue("host", "")),
+	 port(block.GetBlockValue("port", 0u)),
+	 keepalive(block.GetBlockValue("keepalive", false))
+{
+}
+
 Database *
 ProxyDatabase::Create(EventLoop &loop, DatabaseListener &listener,
-		      const ConfigBlock &block, Error &error)
+		      const ConfigBlock &block)
 {
-	ProxyDatabase *db = new ProxyDatabase(loop, listener);
-	if (!db->Configure(block, error)) {
-		delete db;
-		db = nullptr;
+	return new ProxyDatabase(loop, listener, block);
+}
+
+void
+ProxyDatabase::Open()
+{
+	update_stamp = std::chrono::system_clock::time_point::min();
+
+	try {
+		Connect();
+	} catch (const std::runtime_error &error) {
+		/* this error is non-fatal, because this plugin will
+		   attempt to reconnect again automatically */
+		LogError(error);
 	}
-
-	return db;
-}
-
-bool
-ProxyDatabase::Configure(const ConfigBlock &block, gcc_unused Error &error)
-{
-	host = block.GetBlockValue("host", "");
-	port = block.GetBlockValue("port", 0u);
-	keepalive = block.GetBlockValue("keepalive", false);
-
-	return true;
-}
-
-bool
-ProxyDatabase::Open(Error &error)
-{
-	if (!Connect(error))
-		return false;
-
-	update_stamp = 0;
-
-	return true;
 }
 
 void
@@ -360,26 +365,31 @@ ProxyDatabase::Close()
 		Disconnect();
 }
 
-bool
-ProxyDatabase::Connect(Error &error)
+void
+ProxyDatabase::Connect()
 {
 	const char *_host = host.empty() ? nullptr : host.c_str();
 	connection = mpd_connection_new(_host, port, 0);
-	if (connection == nullptr) {
-		error.Set(libmpdclient_domain, (int)MPD_ERROR_OOM,
-			  "Out of memory");
-		return false;
-	}
+	if (connection == nullptr)
+		throw LibmpdclientError(MPD_ERROR_OOM, "Out of memory");
 
-	if (!CheckError(connection, error)) {
+	try {
+		CheckError(connection);
+	} catch (...) {
 		mpd_connection_free(connection);
 		connection = nullptr;
 
-		return false;
+		std::throw_with_nested(host.empty()
+				       ? std::runtime_error("Failed to connect to remote MPD")
+				       : FormatRuntimeError("Failed to connect to remote MPD '%s'",
+							    host.c_str()));
 	}
 
 #if LIBMPDCLIENT_CHECK_VERSION(2, 10, 0)
 	mpd_connection_set_keepalive(connection, keepalive);
+#else
+	// suppress -Wunused-private-field
+	(void)keepalive;
 #endif
 
 	idle_received = unsigned(-1);
@@ -387,41 +397,43 @@ ProxyDatabase::Connect(Error &error)
 
 	SocketMonitor::Open(mpd_async_get_fd(mpd_connection_get_async(connection)));
 	IdleMonitor::Schedule();
-
-	return true;
 }
 
-bool
-ProxyDatabase::CheckConnection(Error &error)
+void
+ProxyDatabase::CheckConnection()
 {
 	assert(connection != nullptr);
 
 	if (!mpd_connection_clear_error(connection)) {
 		Disconnect();
-		return Connect(error);
+		Connect();
+		return;
 	}
 
 	if (is_idle) {
 		unsigned idle = mpd_run_noidle(connection);
-		if (idle == 0 && !CheckError(connection, error)) {
-			Disconnect();
-			return false;
+		if (idle == 0) {
+			try {
+				CheckError(connection);
+			} catch (...) {
+				Disconnect();
+				throw;
+			}
 		}
 
 		idle_received |= idle;
 		is_idle = false;
 		IdleMonitor::Schedule();
 	}
-
-	return true;
 }
 
-bool
-ProxyDatabase::EnsureConnected(Error &error)
+void
+ProxyDatabase::EnsureConnected()
 {
-	return connection != nullptr
-		? CheckConnection(error)
-		: Connect(error);
+	if (connection != nullptr)
+		CheckConnection();
+	else
+		Connect();
 }
 
 void
@@ -449,8 +461,9 @@ ProxyDatabase::OnSocketReady(gcc_unused unsigned flags)
 
 	unsigned idle = (unsigned)mpd_recv_idle(connection, false);
 	if (idle == 0) {
-		Error error;
-		if (!CheckError(connection, error)) {
+		try {
+			CheckError(connection);
+		} catch (const std::runtime_error &error) {
 			LogError(error);
 			Disconnect();
 			return false;
@@ -483,9 +496,11 @@ ProxyDatabase::OnIdle()
 		return;
 
 	if (!mpd_send_idle_mask(connection, MPD_IDLE_DATABASE)) {
-		Error error;
-		if (!CheckError(connection, error))
+		try {
+			ThrowError(connection);
+		} catch (const std::runtime_error &error) {
 			LogError(error);
+		}
 
 		SocketMonitor::Steal();
 		mpd_connection_free(connection);
@@ -498,23 +513,19 @@ ProxyDatabase::OnIdle()
 }
 
 const LightSong *
-ProxyDatabase::GetSong(const char *uri, Error &error) const
+ProxyDatabase::GetSong(const char *uri) const
 {
 	// TODO: eliminate the const_cast
-	if (!const_cast<ProxyDatabase *>(this)->EnsureConnected(error))
-		return nullptr;
+	const_cast<ProxyDatabase *>(this)->EnsureConnected();
 
-	if (!mpd_send_list_meta(connection, uri)) {
-		CheckError(connection, error);
-		return nullptr;
-	}
+	if (!mpd_send_list_meta(connection, uri))
+		ThrowError(connection);
 
 	struct mpd_song *song = mpd_recv_song(connection);
-	if (!mpd_response_finish(connection) &&
-	    !CheckError(connection, error)) {
+	if (!mpd_response_finish(connection)) {
 		if (song != nullptr)
 			mpd_song_free(song);
-		return nullptr;
+		ThrowError(connection);
 	}
 
 	if (song == nullptr)
@@ -534,18 +545,18 @@ ProxyDatabase::ReturnSong(const LightSong *_song) const
 	delete song;
 }
 
-static bool
+static void
 Visit(struct mpd_connection *connection, const char *uri,
       bool recursive, const SongFilter *filter,
       VisitDirectory visit_directory, VisitSong visit_song,
-      VisitPlaylist visit_playlist, Error &error);
+      VisitPlaylist visit_playlist);
 
-static bool
+static void
 Visit(struct mpd_connection *connection,
       bool recursive, const SongFilter *filter,
       const struct mpd_directory *directory,
       VisitDirectory visit_directory, VisitSong visit_song,
-      VisitPlaylist visit_playlist, Error &error)
+      VisitPlaylist visit_playlist)
 {
 	const char *path = mpd_directory_get_path(directory);
 #if LIBMPDCLIENT_CHECK_VERSION(2,9,0)
@@ -554,16 +565,12 @@ Visit(struct mpd_connection *connection,
 	time_t mtime = 0;
 #endif
 
-	if (visit_directory &&
-	    !visit_directory(LightDirectory(path, mtime), error))
-		return false;
+	if (visit_directory)
+		visit_directory(LightDirectory(path, mtime));
 
-	if (recursive &&
-	    !Visit(connection, path, recursive, filter,
-		   visit_directory, visit_song, visit_playlist, error))
-		return false;
-
-	return true;
+	if (recursive)
+		Visit(connection, path, recursive, filter,
+		      visit_directory, visit_song, visit_playlist);
 }
 
 gcc_pure
@@ -573,29 +580,30 @@ Match(const SongFilter *filter, const LightSong &song)
 	return filter == nullptr || filter->Match(song);
 }
 
-static bool
+static void
 Visit(const SongFilter *filter,
       const mpd_song *_song,
-      VisitSong visit_song, Error &error)
+      VisitSong visit_song)
 {
 	if (!visit_song)
-		return true;
+		return;
 
 	const ProxySong song(_song);
-	return !Match(filter, song) || visit_song(song, error);
+	if (Match(filter, song))
+		visit_song(song);
 }
 
-static bool
+static void
 Visit(const struct mpd_playlist *playlist,
-      VisitPlaylist visit_playlist, Error &error)
+      VisitPlaylist visit_playlist)
 {
 	if (!visit_playlist)
-		return true;
+		return;
 
 	PlaylistInfo p(mpd_playlist_get_path(playlist),
 		       mpd_playlist_get_last_modified(playlist));
 
-	return visit_playlist(p, LightDirectory::Root(), error);
+	visit_playlist(p, LightDirectory::Root());
 }
 
 class ProxyEntity {
@@ -636,18 +644,17 @@ ReceiveEntities(struct mpd_connection *connection)
 	return entities;
 }
 
-static bool
+static void
 Visit(struct mpd_connection *connection, const char *uri,
       bool recursive, const SongFilter *filter,
       VisitDirectory visit_directory, VisitSong visit_song,
-      VisitPlaylist visit_playlist, Error &error)
+      VisitPlaylist visit_playlist)
 {
 	if (!mpd_send_list_meta(connection, uri))
-		return CheckError(connection, error);
+		ThrowError(connection);
 
 	std::list<ProxyEntity> entities(ReceiveEntities(connection));
-	if (!CheckError(connection, error))
-		return false;
+	CheckError(connection);
 
 	for (const auto &entity : entities) {
 		switch (mpd_entity_get_type(entity)) {
@@ -655,36 +662,27 @@ Visit(struct mpd_connection *connection, const char *uri,
 			break;
 
 		case MPD_ENTITY_TYPE_DIRECTORY:
-			if (!Visit(connection, recursive, filter,
-				   mpd_entity_get_directory(entity),
-				   visit_directory, visit_song, visit_playlist,
-				   error))
-				return false;
+			Visit(connection, recursive, filter,
+			      mpd_entity_get_directory(entity),
+			      visit_directory, visit_song, visit_playlist);
 			break;
 
 		case MPD_ENTITY_TYPE_SONG:
-			if (!Visit(filter,
-				   mpd_entity_get_song(entity), visit_song,
-				   error))
-				return false;
+			Visit(filter, mpd_entity_get_song(entity), visit_song);
 			break;
 
 		case MPD_ENTITY_TYPE_PLAYLIST:
-			if (!Visit(mpd_entity_get_playlist(entity),
-				   visit_playlist, error))
-				return false;
+			Visit(mpd_entity_get_playlist(entity),
+			      visit_playlist);
 			break;
 		}
 	}
-
-	return CheckError(connection, error);
 }
 
-static bool
+static void
 SearchSongs(struct mpd_connection *connection,
 	    const DatabaseSelection &selection,
-	    VisitSong visit_song,
-	    Error &error)
+	    VisitSong visit_song)
 {
 	assert(selection.recursive);
 	assert(visit_song);
@@ -695,19 +693,23 @@ SearchSongs(struct mpd_connection *connection,
 	if (!mpd_search_db_songs(connection, exact) ||
 	    !SendConstraints(connection, selection) ||
 	    !mpd_search_commit(connection))
-		return CheckError(connection, error);
+		ThrowError(connection);
 
-	bool result = true;
-	struct mpd_song *song;
-	while (result && (song = mpd_recv_song(connection)) != nullptr) {
+	while (auto *song = mpd_recv_song(connection)) {
 		AllocatedProxySong song2(song);
 
-		result = !Match(selection.filter, song2) ||
-			visit_song(song2, error);
+		if (Match(selection.filter, song2)) {
+			try {
+				visit_song(song2);
+			} catch (...) {
+				mpd_response_finish(connection);
+				throw;
+			}
+		}
 	}
 
-	mpd_response_finish(connection);
-	return result && CheckError(connection, error);
+	if (!mpd_response_finish(connection))
+		ThrowError(connection);
 }
 
 /**
@@ -727,65 +729,58 @@ ServerSupportsSearchBase(const struct mpd_connection *connection)
 #endif
 }
 
-bool
+void
 ProxyDatabase::Visit(const DatabaseSelection &selection,
 		     VisitDirectory visit_directory,
 		     VisitSong visit_song,
-		     VisitPlaylist visit_playlist,
-		     Error &error) const
+		     VisitPlaylist visit_playlist) const
 {
 	// TODO: eliminate the const_cast
-	if (!const_cast<ProxyDatabase *>(this)->EnsureConnected(error))
-		return false;
+	const_cast<ProxyDatabase *>(this)->EnsureConnected();
 
 	if (!visit_directory && !visit_playlist && selection.recursive &&
 	    (ServerSupportsSearchBase(connection)
 	     ? !selection.IsEmpty()
-	     : selection.HasOtherThanBase()))
+	     : selection.HasOtherThanBase())) {
 		/* this optimized code path can only be used under
 		   certain conditions */
-		return ::SearchSongs(connection, selection, visit_song, error);
-
-	/* fall back to recursive walk (slow!) */
-	return ::Visit(connection, selection.uri.c_str(),
-		       selection.recursive, selection.filter,
-		       visit_directory, visit_song, visit_playlist,
-		       error);
-}
-
-bool
-ProxyDatabase::VisitUniqueTags(const DatabaseSelection &selection,
-			       TagType tag_type,
-			       gcc_unused tag_mask_t group_mask,
-			       VisitTag visit_tag,
-			       Error &error) const
-{
-	// TODO: eliminate the const_cast
-	if (!const_cast<ProxyDatabase *>(this)->EnsureConnected(error))
-		return false;
-
-	enum mpd_tag_type tag_type2 = Convert(tag_type);
-	if (tag_type2 == MPD_TAG_COUNT) {
-		error.Set(libmpdclient_domain, "Unsupported tag");
-		return false;
+		::SearchSongs(connection, selection, visit_song);
+		return;
 	}
 
-	if (!mpd_search_db_tags(connection, tag_type2))
-		return CheckError(connection, error);
+	/* fall back to recursive walk (slow!) */
+	::Visit(connection, selection.uri.c_str(),
+		selection.recursive, selection.filter,
+		visit_directory, visit_song, visit_playlist);
+}
 
-	if (!SendConstraints(connection, selection))
-		return CheckError(connection, error);
+void
+ProxyDatabase::VisitUniqueTags(const DatabaseSelection &selection,
+			       TagType tag_type,
+			       gcc_unused TagMask group_mask,
+			       VisitTag visit_tag) const
+{
+	// TODO: eliminate the const_cast
+	const_cast<ProxyDatabase *>(this)->EnsureConnected();
+
+	enum mpd_tag_type tag_type2 = Convert(tag_type);
+	if (tag_type2 == MPD_TAG_COUNT)
+		throw std::runtime_error("Unsupported tag");
+
+	if (!mpd_search_db_tags(connection, tag_type2) ||
+	    !SendConstraints(connection, selection))
+		ThrowError(connection);
 
 	// TODO: use group_mask
 
 	if (!mpd_search_commit(connection))
-		return CheckError(connection, error);
+		ThrowError(connection);
 
-	bool result = true;
+	while (auto *pair = mpd_recv_pair_tag(connection, tag_type2)) {
+		AtScopeExit(this, pair) {
+			mpd_return_pair(connection, pair);
+		};
 
-	struct mpd_pair *pair;
-	while (result &&
-	       (pair = mpd_recv_pair_tag(connection, tag_type2)) != nullptr) {
 		TagBuilder tag;
 		tag.AddItem(tag_type, pair->value);
 
@@ -797,54 +792,53 @@ ProxyDatabase::VisitUniqueTags(const DatabaseSelection &selection,
 			   given tag type to be present */
 			tag.AddEmptyItem(tag_type);
 
-		result = visit_tag(tag.Commit(), error);
-		mpd_return_pair(connection, pair);
+		try {
+			visit_tag(tag.Commit());
+		} catch (...) {
+			mpd_response_finish(connection);
+			throw;
+		}
 	}
 
-	return mpd_response_finish(connection) &&
-		CheckError(connection, error) &&
-		result;
+	if (!mpd_response_finish(connection))
+		ThrowError(connection);
 }
 
-bool
-ProxyDatabase::GetStats(const DatabaseSelection &selection,
-			DatabaseStats &stats, Error &error) const
+DatabaseStats
+ProxyDatabase::GetStats(const DatabaseSelection &selection) const
 {
 	// TODO: match
 	(void)selection;
 
 	// TODO: eliminate the const_cast
-	if (!const_cast<ProxyDatabase *>(this)->EnsureConnected(error))
-		return false;
+	const_cast<ProxyDatabase *>(this)->EnsureConnected();
 
 	struct mpd_stats *stats2 =
 		mpd_run_stats(connection);
 	if (stats2 == nullptr)
-		return CheckError(connection, error);
+		ThrowError(connection);
 
-	update_stamp = (time_t)mpd_stats_get_db_update_time(stats2);
+	update_stamp = std::chrono::system_clock::from_time_t(mpd_stats_get_db_update_time(stats2));
 
+	DatabaseStats stats;
 	stats.song_count = mpd_stats_get_number_of_songs(stats2);
 	stats.total_duration = std::chrono::seconds(mpd_stats_get_db_play_time(stats2));
 	stats.artist_count = mpd_stats_get_number_of_artists(stats2);
 	stats.album_count = mpd_stats_get_number_of_albums(stats2);
 	mpd_stats_free(stats2);
-
-	return true;
+	return stats;
 }
 
 unsigned
-ProxyDatabase::Update(const char *uri_utf8, bool discard,
-		      Error &error)
+ProxyDatabase::Update(const char *uri_utf8, bool discard)
 {
-	if (!EnsureConnected(error))
-		return 0;
+	EnsureConnected();
 
 	unsigned id = discard
 		? mpd_run_rescan(connection, uri_utf8)
 		: mpd_run_update(connection, uri_utf8);
 	if (id == 0)
-		CheckError(connection, error);
+		CheckError(connection);
 
 	return id;
 }

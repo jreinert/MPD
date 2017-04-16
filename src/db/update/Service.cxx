@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -27,11 +27,7 @@
 #include "db/plugins/simple/Directory.hxx"
 #include "storage/CompositeStorage.hxx"
 #include "Idle.hxx"
-#include "util/Error.hxx"
 #include "Log.hxx"
-#include "Instance.hxx"
-#include "system/FatalError.hxx"
-#include "thread/Id.hxx"
 #include "thread/Thread.hxx"
 #include "thread/Util.hxx"
 
@@ -47,7 +43,7 @@ UpdateService::UpdateService(EventLoop &_loop, SimpleDatabase &_db,
 	:DeferredMonitor(_loop),
 	 db(_db), storage(_storage),
 	 listener(_listener),
-	 progress(UPDATE_PROGRESS_IDLE),
+	 update_thread(BIND_THIS_METHOD(Task)),
 	 update_task_id(0),
 	 walk(nullptr)
 {
@@ -142,15 +138,7 @@ UpdateService::Task()
 	else
 		LogDebug(update_domain, "finished");
 
-	progress = UPDATE_PROGRESS_DONE;
 	DeferredMonitor::Schedule();
-}
-
-void
-UpdateService::Task(void *ctx)
-{
-	UpdateService &service = *(UpdateService *)ctx;
-	return service.Task();
 }
 
 void
@@ -159,15 +147,12 @@ UpdateService::StartThread(UpdateQueueItem &&i)
 	assert(GetEventLoop().IsInsideOrNull());
 	assert(walk == nullptr);
 
-	progress = UPDATE_PROGRESS_RUNNING;
 	modified = false;
 
 	next = std::move(i);
 	walk = new UpdateWalk(GetEventLoop(), listener, *next.storage);
 
-	Error error;
-	if (!update_thread.Start(Task, this, error))
-		FatalError(error);
+	update_thread.Start();
 
 	FormatDebug(update_domain,
 		    "spawned thread for update job id %i", next.id);
@@ -233,7 +218,7 @@ UpdateService::Enqueue(const char *path, bool discard)
 		   happen */
 		return 0;
 
-	if (progress != UPDATE_PROGRESS_IDLE) {
+	if (walk != nullptr) {
 		const unsigned id = GenerateId();
 		if (!queue.Push(*db2, *storage2, path, discard, id))
 			return 0;
@@ -256,7 +241,6 @@ UpdateService::Enqueue(const char *path, bool discard)
 void
 UpdateService::RunDeferred()
 {
-	assert(progress == UPDATE_PROGRESS_DONE);
 	assert(next.IsDefined());
 	assert(walk != nullptr);
 
@@ -280,7 +264,5 @@ UpdateService::RunDeferred()
 	if (i.IsDefined()) {
 		/* schedule the next path */
 		StartThread(std::move(i));
-	} else {
-		progress = UPDATE_PROGRESS_IDLE;
 	}
 }

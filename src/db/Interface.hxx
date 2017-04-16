@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -21,17 +21,16 @@
 #define MPD_DATABASE_INTERFACE_HXX
 
 #include "Visitor.hxx"
-#include "tag/TagType.h"
-#include "tag/Mask.hxx"
+#include "tag/Type.h"
 #include "Compiler.h"
 
-#include <time.h>
+#include <chrono>
 
 struct DatabasePlugin;
 struct DatabaseStats;
 struct DatabaseSelection;
 struct LightSong;
-class Error;
+class TagMask;
 
 class Database {
 	const DatabasePlugin &plugin;
@@ -55,9 +54,10 @@ public:
 
 	/**
          * Open the database.  Read it into memory if applicable.
+	 *
+	 * Throws #DatabaseError or std::runtime_error on error.
 	 */
-	virtual bool Open(gcc_unused Error &error) {
-		return true;
+	virtual void Open() {
 	}
 
 	/**
@@ -69,11 +69,15 @@ public:
          * Look up a song (including tag data) in the database.  When
          * you don't need this anymore, call ReturnSong().
 	 *
+	 * Throws std::runtime_error (or its derivative
+	 * #DatabaseError) on error.  "Not found" is an error that
+	 * throws DatabaseErrorCode::NOT_FOUND.
+	 *
 	 * @param uri_utf8 the URI of the song within the music
 	 * directory (UTF-8)
+	 * @return a pointer that must be released with ReturnSong()
 	 */
-	virtual const LightSong *GetSong(const char *uri_utf8,
-					 Error &error) const = 0;
+	virtual const LightSong *GetSong(const char *uri_utf8) const = 0;
 
 	/**
 	 * Mark the song object as "unused".  Call this on objects
@@ -84,55 +88,51 @@ public:
 	/**
 	 * Visit the selected entities.
 	 */
-	virtual bool Visit(const DatabaseSelection &selection,
+	virtual void Visit(const DatabaseSelection &selection,
 			   VisitDirectory visit_directory,
 			   VisitSong visit_song,
-			   VisitPlaylist visit_playlist,
-			   Error &error) const = 0;
+			   VisitPlaylist visit_playlist) const = 0;
 
-	bool Visit(const DatabaseSelection &selection,
+	void Visit(const DatabaseSelection &selection,
 		   VisitDirectory visit_directory,
-		   VisitSong visit_song,
-		   Error &error) const {
-		return Visit(selection, visit_directory, visit_song,
-			     VisitPlaylist(), error);
+		   VisitSong visit_song) const {
+		Visit(selection, visit_directory, visit_song, VisitPlaylist());
 	}
 
-	bool Visit(const DatabaseSelection &selection, VisitSong visit_song,
-		   Error &error) const {
-		return Visit(selection, VisitDirectory(), visit_song, error);
+	void Visit(const DatabaseSelection &selection,
+		   VisitSong visit_song) const {
+		return Visit(selection, VisitDirectory(), visit_song);
 	}
 
 	/**
 	 * Visit all unique tag values.
 	 */
-	virtual bool VisitUniqueTags(const DatabaseSelection &selection,
-				     TagType tag_type, tag_mask_t group_mask,
-				     VisitTag visit_tag,
-				     Error &error) const = 0;
+	virtual void VisitUniqueTags(const DatabaseSelection &selection,
+				     TagType tag_type, TagMask group_mask,
+				     VisitTag visit_tag) const = 0;
 
-	virtual bool GetStats(const DatabaseSelection &selection,
-			      DatabaseStats &stats,
-			      Error &error) const = 0;
+	gcc_pure
+	virtual DatabaseStats GetStats(const DatabaseSelection &selection) const = 0;
 
 	/**
-	 * Update the database.  Returns the job id on success, 0 on
-	 * error (with #Error set) and 0 if not implemented (#Error
-	 * not set).
+	 * Update the database.
+	 *
+	 * Throws #std::runtime_error on error.
+	 *
+	 * @return the job id or 0 if not implemented
 	 */
 	virtual unsigned Update(gcc_unused const char *uri_utf8,
-				gcc_unused bool discard,
-				gcc_unused Error &error) {
-		/* not implemented: return 0 and don't set an Error */
+				gcc_unused bool discard) {
+		/* not implemented: return 0 */
 		return 0;
 	}
 
 	/**
 	 * Returns the time stamp of the last database update.
-	 * Returns 0 if that is not not known/available.
+	 * Returns a negative value if that is not not known/available.
 	 */
 	gcc_pure
-	virtual time_t GetUpdateStamp() const = 0;
+	virtual std::chrono::system_clock::time_point GetUpdateStamp() const = 0;
 };
 
 #endif

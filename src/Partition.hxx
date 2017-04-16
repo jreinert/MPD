@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -20,13 +20,18 @@
 #ifndef MPD_PARTITION_HXX
 #define MPD_PARTITION_HXX
 
+#include "event/MaskMonitor.hxx"
 #include "queue/Playlist.hxx"
+#include "queue/Listener.hxx"
 #include "output/MultipleOutputs.hxx"
 #include "mixer/Listener.hxx"
 #include "player/Control.hxx"
 #include "player/Listener.hxx"
+#include "ReplayGainMode.hxx"
 #include "Chrono.hxx"
 #include "Compiler.h"
+
+#include <string>
 
 struct Instance;
 class MultipleOutputs;
@@ -36,8 +41,15 @@ class SongLoader;
  * A partition of the Music Player Daemon.  It is a separate unit with
  * a playlist, a player, outputs etc.
  */
-struct Partition final : private PlayerListener, private MixerListener {
+struct Partition final : QueueListener, PlayerListener, MixerListener {
+	static constexpr unsigned TAG_MODIFIED = 0x1;
+	static constexpr unsigned SYNC_WITH_PLAYER = 0x2;
+
 	Instance &instance;
+
+	const std::string name;
+
+	MaskMonitor global_events;
 
 	struct playlist playlist;
 
@@ -45,22 +57,29 @@ struct Partition final : private PlayerListener, private MixerListener {
 
 	PlayerControl pc;
 
+	ReplayGainMode replay_gain_mode = ReplayGainMode::OFF;
+
 	Partition(Instance &_instance,
+		  const char *_name,
 		  unsigned max_length,
 		  unsigned buffer_chunks,
-		  unsigned buffered_before_play)
-		:instance(_instance), playlist(max_length),
-		 outputs(*this),
-		 pc(*this, outputs, buffer_chunks, buffered_before_play) {}
+		  unsigned buffered_before_play,
+		  AudioFormat configured_audio_format,
+		  const ReplayGainConfig &replay_gain_config);
+
+	void EmitGlobalEvent(unsigned mask) {
+		global_events.OrMask(mask);
+	}
+
+	void EmitIdle(unsigned mask);
 
 	void ClearQueue() {
 		playlist.Clear(pc);
 	}
 
 	unsigned AppendURI(const SongLoader &loader,
-			   const char *uri_utf8,
-			   Error &error) {
-		return playlist.AppendURI(pc, loader, uri_utf8, error);
+			   const char *uri_utf8) {
+		return playlist.AppendURI(pc, loader, uri_utf8);
 	}
 
 	void DeletePosition(unsigned position) {
@@ -81,13 +100,9 @@ struct Partition final : private PlayerListener, private MixerListener {
 		playlist.DeleteRange(pc, start, end);
 	}
 
-#ifdef ENABLE_DATABASE
-
-	void DeleteSong(const char *uri) {
-		playlist.DeleteSong(pc, uri);
+	void StaleSong(const char *uri) {
+		playlist.StaleSong(pc, uri);
 	}
-
-#endif
 
 	void Shuffle(unsigned start, unsigned end) {
 		playlist.Shuffle(pc, start, end);
@@ -123,35 +138,32 @@ struct Partition final : private PlayerListener, private MixerListener {
 		playlist.Stop(pc);
 	}
 
-	bool PlayPosition(int position, Error &error) {
-		return playlist.PlayPosition(pc, position, error);
+	void PlayPosition(int position) {
+		return playlist.PlayPosition(pc, position);
 	}
 
-	bool PlayId(int id, Error &error) {
-		return playlist.PlayId(pc, id, error);
+	void PlayId(int id) {
+		return playlist.PlayId(pc, id);
 	}
 
-	bool PlayNext(Error &error) {
-		return playlist.PlayNext(pc, error);
+	void PlayNext() {
+		return playlist.PlayNext(pc);
 	}
 
-	bool PlayPrevious(Error &error) {
-		return playlist.PlayPrevious(pc, error);
+	void PlayPrevious() {
+		return playlist.PlayPrevious(pc);
 	}
 
-	bool SeekSongPosition(unsigned song_position,
-			      SongTime seek_time, Error &error) {
-		return playlist.SeekSongPosition(pc, song_position, seek_time,
-						 error);
+	void SeekSongPosition(unsigned song_position, SongTime seek_time) {
+		playlist.SeekSongPosition(pc, song_position, seek_time);
 	}
 
-	bool SeekSongId(unsigned song_id, SongTime seek_time, Error &error) {
-		return playlist.SeekSongId(pc, song_id, seek_time, error);
+	void SeekSongId(unsigned song_id, SongTime seek_time) {
+		playlist.SeekSongId(pc, song_id, seek_time);
 	}
 
-	bool SeekCurrent(SignedSongTime seek_time, bool relative,
-			 Error &error) {
-		return playlist.SeekCurrent(pc, seek_time, relative, error);
+	void SeekCurrent(SignedSongTime seek_time, bool relative) {
+		playlist.SeekCurrent(pc, seek_time, relative);
 	}
 
 	void SetRepeat(bool new_value) {
@@ -174,13 +186,27 @@ struct Partition final : private PlayerListener, private MixerListener {
 		playlist.SetConsume(new_value);
 	}
 
+	void SetReplayGainMode(ReplayGainMode mode) {
+		replay_gain_mode = mode;
+		UpdateEffectiveReplayGainMode();
+	}
+
+	/**
+	 * Publishes the effective #ReplayGainMode to all subsystems.
+	 * #ReplayGainMode::AUTO is substituted.
+	 */
+	void UpdateEffectiveReplayGainMode();
+
 #ifdef ENABLE_DATABASE
 	/**
 	 * Returns the global #Database instance.  May return nullptr
 	 * if this MPD configuration has no database (no
 	 * music_directory was configured).
 	 */
-	const Database *GetDatabase(Error &error) const;
+	const Database *GetDatabase() const;
+
+	gcc_pure
+	const Database &GetDatabaseOrThrow() const;
 
 	/**
 	 * The database has been modified.  Propagate the change to
@@ -201,12 +227,20 @@ struct Partition final : private PlayerListener, private MixerListener {
 	void SyncWithPlayer();
 
 private:
+	/* virtual methods from class QueueListener */
+	void OnQueueModified() override;
+	void OnQueueOptionsChanged() override;
+	void OnQueueSongStarted() override;
+
 	/* virtual methods from class PlayerListener */
-	virtual void OnPlayerSync() override;
-	virtual void OnPlayerTagModified() override;
+	void OnPlayerSync() override;
+	void OnPlayerTagModified() override;
 
 	/* virtual methods from class MixerListener */
-	virtual void OnMixerVolumeChanged(Mixer &mixer, int volume) override;
+	void OnMixerVolumeChanged(Mixer &mixer, int volume) override;
+
+	/* callback for #global_events */
+	void OnGlobalEvent(unsigned mask);
 };
 
 #endif

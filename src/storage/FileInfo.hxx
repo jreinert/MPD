@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -22,7 +22,8 @@
 
 #include "check.h"
 
-#include <time.h>
+#include <chrono>
+
 #include <stdint.h>
 
 struct StorageFileInfo {
@@ -40,9 +41,10 @@ struct StorageFileInfo {
 	uint64_t size;
 
 	/**
-	 * The modification time.  0 means unknown / not applicable.
+	 * The modification time.  A negative value means unknown /
+	 * not applicable.
 	 */
-	time_t mtime;
+	std::chrono::system_clock::time_point mtime;
 
 	/**
 	 * Device id and inode number.  0 means unknown / not
@@ -50,11 +52,19 @@ struct StorageFileInfo {
 	 */
 	unsigned device, inode;
 
-	bool IsRegular() const {
+	StorageFileInfo() = default;
+
+	explicit constexpr StorageFileInfo(Type _type)
+		:type(_type),
+		 size(0),
+		 mtime(std::chrono::system_clock::time_point::min()),
+		 device(0), inode(0) {}
+
+	constexpr bool IsRegular() const {
 		return type == Type::REGULAR;
 	}
 
-	bool IsDirectory() const {
+	constexpr bool IsDirectory() const {
 		return type == Type::DIRECTORY;
 	}
 };

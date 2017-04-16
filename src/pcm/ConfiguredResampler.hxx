@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -22,11 +22,10 @@
 
 #include "check.h"
 
-class Error;
 class PcmResampler;
 
-bool
-pcm_resampler_global_init(Error &error);
+void
+pcm_resampler_global_init();
 
 /**
  * Create a #PcmResampler instance from the implementation class

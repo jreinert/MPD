@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -19,7 +19,7 @@
 
 #include "config.h"
 #include "Generic.hxx"
-#include "TagId3.hxx"
+#include "Id3Scan.hxx"
 #include "ApeTag.hxx"
 #include "fs/Path.hxx"
 #include "thread/Mutex.hxx"
@@ -27,7 +27,6 @@
 #include "input/InputStream.hxx"
 #include "input/LocalOpen.hxx"
 #include "Log.hxx"
-#include "util/Error.hxx"
 
 #include <stdexcept>
 
@@ -38,8 +37,11 @@ ScanGenericTags(InputStream &is, const TagHandler &handler, void *ctx)
 		return true;
 
 #ifdef ENABLE_ID3TAG
-	if (!is.LockRewind(IgnoreError()))
+	try {
+		is.LockRewind();
+	} catch (const std::runtime_error &) {
 		return false;
+	}
 
 	return tag_id3_scan(is, handler, ctx);
 #else
@@ -53,13 +55,7 @@ try {
 	Mutex mutex;
 	Cond cond;
 
-	Error error;
-	auto is = OpenLocalInputStream(path, mutex, cond, error);
-	if (!is) {
-		LogError(error);
-		return false;
-	}
-
+	auto is = OpenLocalInputStream(path, mutex, cond);
 	return ScanGenericTags(*is, handler, ctx);
 } catch (const std::runtime_error &e) {
 	LogError(e);

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -23,7 +23,6 @@
 #include "PlaylistError.hxx"
 #include "queue/Playlist.hxx"
 #include "DetachedSong.hxx"
-#include "SongLoader.hxx"
 #include "Mapper.hxx"
 #include "Idle.hxx"
 #include "fs/AllocatedPath.hxx"
@@ -32,12 +31,9 @@
 #include "fs/NarrowPath.hxx"
 #include "fs/io/FileOutputStream.hxx"
 #include "fs/io/BufferedOutputStream.hxx"
-#include "util/Alloc.hxx"
 #include "util/UriUtil.hxx"
-#include "util/Error.hxx"
-#include "Log.hxx"
 
-#include <string.h>
+#include <stdexcept>
 
 void
 playlist_print_song(BufferedOutputStream &os, const DetachedSong &song)
@@ -46,25 +42,30 @@ playlist_print_song(BufferedOutputStream &os, const DetachedSong &song)
 		? song.GetRealURI()
 		: song.GetURI();
 
-	const auto uri_fs = AllocatedPath::FromUTF8(uri_utf8);
-	if (!uri_fs.IsNull())
+	try {
+		const auto uri_fs = AllocatedPath::FromUTF8Throw(uri_utf8);
 		os.Format("%s\n", NarrowPath(uri_fs).c_str());
+	} catch (const std::runtime_error &) {
+	}
 }
 
 void
 playlist_print_uri(BufferedOutputStream &os, const char *uri)
 {
-	auto path =
+	try {
+		auto path =
 #ifdef ENABLE_DATABASE
-		playlist_saveAbsolutePaths && !uri_has_scheme(uri) &&
-		!PathTraitsUTF8::IsAbsolute(uri)
-		? map_uri_fs(uri)
-		:
+			playlist_saveAbsolutePaths && !uri_has_scheme(uri) &&
+			!PathTraitsUTF8::IsAbsolute(uri)
+			? map_uri_fs(uri)
+			:
 #endif
-		AllocatedPath::FromUTF8(uri);
+			AllocatedPath::FromUTF8Throw(uri);
 
-	if (!path.IsNull())
-		os.Format("%s\n", NarrowPath(path).c_str());
+		if (!path.IsNull())
+			os.Format("%s\n", NarrowPath(path).c_str());
+	} catch (const std::runtime_error &) {
+	}
 }
 
 void

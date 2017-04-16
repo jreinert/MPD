@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -35,8 +35,9 @@
 #include "fs/Traits.hxx"
 #include "fs/FileSystem.hxx"
 #include "fs/StandardDirectory.hxx"
+#include "system/Error.hxx"
 #include "util/Macros.hxx"
-#include "util/Error.hxx"
+#include "util/RuntimeError.hxx"
 #include "util/Domain.hxx"
 #include "util/OptionDef.hxx"
 #include "util/OptionParser.hxx"
@@ -106,7 +107,7 @@ static void version(void)
 	       "\n"
 	       "\n"
 	       "Copyright (C) 2003-2007 Warren Dukes <warren.dukes@gmail.com>\n"
-	       "Copyright (C) 2008-2015 Max Kellermann <max@duempel.org>\n"
+	       "Copyright 2008-2017 Max Kellermann <max.kellermann@gmail.com>\n"
 	       "This is free software; see the source for copying conditions.  There is NO\n"
 	       "warranty; not even MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n"
 
@@ -280,7 +281,7 @@ class ConfigLoader
 public:
 	bool TryFile(const Path path);
 	bool TryFile(const AllocatedPath &base_path,
-		     PathTraitsFS::const_pointer path);
+		     PathTraitsFS::const_pointer_type path);
 };
 
 bool ConfigLoader::TryFile(Path path)
@@ -293,7 +294,7 @@ bool ConfigLoader::TryFile(Path path)
 }
 
 bool ConfigLoader::TryFile(const AllocatedPath &base_path,
-			   PathTraitsFS::const_pointer path)
+			   PathTraitsFS::const_pointer_type path)
 {
 	if (base_path.IsNull())
 		return false;
@@ -301,9 +302,8 @@ bool ConfigLoader::TryFile(const AllocatedPath &base_path,
 	return TryFile(full_path);
 }
 
-bool
-parse_cmdline(int argc, char **argv, struct options *options,
-	      Error &error)
+void
+ParseCommandLine(int argc, char **argv, struct options *options)
 {
 	bool use_config_file = true;
 	options->kill = false;
@@ -341,9 +341,8 @@ parse_cmdline(int argc, char **argv, struct options *options,
 		if (parser.CheckOption(opt_help, opt_help_alt))
 			help();
 
-		error.Format(cmdline_domain, "invalid option: %s",
-			     parser.GetOption());
-		return false;
+		throw FormatRuntimeError("invalid option: %s",
+					 parser.GetOption());
 	}
 
 	/* initialize the logging library, so the configuration file
@@ -353,7 +352,7 @@ parse_cmdline(int argc, char **argv, struct options *options,
 	if (!use_config_file) {
 		LogDebug(cmdline_domain,
 			 "Ignoring config, using daemon defaults");
-		return true;
+		return;
 	}
 
 	// Second pass: find non-option parameters (i.e. config file)
@@ -365,8 +364,8 @@ parse_cmdline(int argc, char **argv, struct options *options,
 			config_file = argv[i];
 			continue;
 		}
-		error.Set(cmdline_domain, "too many arguments");
-		return false;
+
+		throw std::runtime_error("too many arguments");
 	}
 
 	if (config_file != nullptr) {
@@ -375,16 +374,14 @@ parse_cmdline(int argc, char **argv, struct options *options,
 		wchar_t buffer[MAX_PATH];
 		auto result = MultiByteToWideChar(CP_ACP, 0, config_file, -1,
 						  buffer, ARRAY_SIZE(buffer));
-		if (result <= 0) {
-			error.SetLastError("MultiByteToWideChar() failed");
-			return false;
-		}
+		if (result <= 0)
+			throw MakeLastError("MultiByteToWideChar() failed");
 
 		ReadConfigFile(Path::FromFS(buffer));
 #else
 		ReadConfigFile(Path::FromFS(config_file));
 #endif
-		return true;
+		return;
 	}
 
 	/* use default configuration file path */
@@ -403,10 +400,6 @@ parse_cmdline(int argc, char **argv, struct options *options,
 		loader.TryFile(GetHomeDir(), USER_CONFIG_FILE_LOCATION2) ||
 		loader.TryFile(Path::FromFS(SYSTEM_CONFIG_FILE_LOCATION));
 #endif
-	if (!found) {
-		error.Set(cmdline_domain, "No configuration file found");
-		return false;
-	}
-
-	return true;
+	if (!found)
+		throw std::runtime_error("No configuration file found");
 }

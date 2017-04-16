@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -20,16 +20,16 @@
 #include "config.h"
 #include "TagFile.hxx"
 #include "tag/Generic.hxx"
-#include "tag/TagHandler.hxx"
-#include "tag/TagBuilder.hxx"
+#include "tag/Handler.hxx"
+#include "tag/Builder.hxx"
 #include "fs/Path.hxx"
-#include "util/UriUtil.hxx"
-#include "util/Error.hxx"
 #include "decoder/DecoderList.hxx"
 #include "decoder/DecoderPlugin.hxx"
 #include "input/InputStream.hxx"
 #include "input/LocalOpen.hxx"
 #include "thread/Cond.hxx"
+
+#include <stdexcept>
 
 #include <assert.h>
 
@@ -61,13 +61,18 @@ public:
 
 		/* open the InputStream (if not already open) */
 		if (is == nullptr) {
-			is = OpenLocalInputStream(path_fs,
-						  mutex, cond,
-						  IgnoreError());
-			if (is == nullptr)
+			try {
+				is = OpenLocalInputStream(path_fs,
+							  mutex, cond);
+			} catch (const std::runtime_error &) {
 				return false;
-		} else
-			is->LockRewind(IgnoreError());
+			}
+		} else {
+			try {
+				is->LockRewind();
+			} catch (const std::runtime_error &) {
+			}
+		}
 
 		/* now try the stream_tag() method */
 		return plugin.ScanStream(*is, handler, handler_ctx);

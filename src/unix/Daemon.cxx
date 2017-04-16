@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -22,8 +22,10 @@
 #include "system/FatalError.hxx"
 #include "fs/AllocatedPath.hxx"
 #include "fs/FileSystem.hxx"
+
+#ifndef WIN32
 #include "PidFile.hxx"
-#include "Log.hxx"
+#endif
 
 #include <stdlib.h>
 #include <unistd.h>
@@ -248,7 +250,7 @@ void
 daemonize_finish(void)
 {
 	if (!pidfile.IsNull()) {
-		RemoveFile(pidfile);
+		unlink(pidfile.c_str());
 		pidfile = AllocatedPath::Null();
 	}
 

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -18,28 +18,28 @@
  */
 
 #include "config.h"
-#include "ScopeIOThread.hxx"
+#include "Log.hxx"
+#include "event/Thread.hxx"
 #include "storage/Registry.hxx"
 #include "storage/StorageInterface.hxx"
 #include "storage/FileInfo.hxx"
-#include "util/Error.hxx"
+#include "util/ChronoUtil.hxx"
 
 #include <memory>
+#include <stdexcept>
 
 #include <unistd.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
 
 static Storage *
-MakeStorage(const char *uri)
+MakeStorage(EventLoop &event_loop, const char *uri)
 {
-	Error error;
-	Storage *storage = CreateStorageURI(io_thread_get(), uri, error);
-	if (storage == nullptr) {
-		fprintf(stderr, "%s\n", error.GetMessage());
-		exit(EXIT_FAILURE);
-	}
+	Storage *storage = CreateStorageURI(event_loop, uri);
+	if (storage == nullptr)
+		throw std::runtime_error("Unrecognized storage URI");
 
 	return storage;
 }
@@ -47,21 +47,11 @@ MakeStorage(const char *uri)
 static int
 Ls(Storage &storage, const char *path)
 {
-	Error error;
-	auto dir = storage.OpenDirectory(path, error);
-	if (dir == nullptr) {
-		fprintf(stderr, "%s\n", error.GetMessage());
-		return EXIT_FAILURE;
-	}
+	auto dir = storage.OpenDirectory(path);
 
 	const char *name;
 	while ((name = dir->Read()) != nullptr) {
-		StorageFileInfo info;
-		if (!dir->GetInfo(false, info, error)) {
-			printf("Error on %s: %s\n", name, error.GetMessage());
-			error.Clear();
-			continue;
-		}
+		const auto info = dir->GetInfo(false);
 
 		const char *type = "unk";
 		switch (info.type) {
@@ -78,8 +68,14 @@ Ls(Storage &storage, const char *path)
 			break;
 		}
 
-		char mtime[32];
-		strftime(mtime, sizeof(mtime), "%F", gmtime(&info.mtime));
+		char mtime_buffer[32];
+		const char *mtime = "          ";
+		if (!IsNegative(info.mtime)) {
+			time_t t = std::chrono::system_clock::to_time_t(info.mtime);
+			strftime(mtime_buffer, sizeof(mtime_buffer), "%F",
+				 gmtime(&t));
+			mtime = mtime_buffer;
+		}
 
 		printf("%s %10llu %s %s\n",
 		       type, (unsigned long long)info.size,
@@ -92,7 +88,7 @@ Ls(Storage &storage, const char *path)
 
 int
 main(int argc, char **argv)
-{
+try {
 	if (argc < 3) {
 		fprintf(stderr, "Usage: run_storage COMMAND URI ...\n");
 		return EXIT_FAILURE;
@@ -101,7 +97,8 @@ main(int argc, char **argv)
 	const char *const command = argv[1];
 	const char *const storage_uri = argv[2];
 
-	const ScopeIOThread io_thread;
+	EventThread io_thread;
+	io_thread.Start();
 
 	if (strcmp(command, "ls") == 0) {
 		if (argc != 4) {
@@ -111,11 +108,17 @@ main(int argc, char **argv)
 
 		const char *const path = argv[3];
 
-		std::unique_ptr<Storage> storage(MakeStorage(storage_uri));
+		std::unique_ptr<Storage> storage(MakeStorage(io_thread.GetEventLoop(),
+							     storage_uri));
 
 		return Ls(*storage, path);
 	} else {
 		fprintf(stderr, "Unknown command\n");
 		return EXIT_FAILURE;
 	}
+
+	return EXIT_SUCCESS;
+} catch (const std::exception &e) {
+	LogError(e);
+	return EXIT_FAILURE;
 }

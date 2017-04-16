@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -21,9 +21,11 @@
 #define MPD_ASYNC_INPUT_STREAM_HXX
 
 #include "InputStream.hxx"
-#include "event/DeferredMonitor.hxx"
+#include "event/DeferredCall.hxx"
+#include "util/HugeAllocator.hxx"
 #include "util/CircularBuffer.hxx"
-#include "util/Error.hxx"
+
+#include <exception>
 
 /**
  * Helper class for moving asynchronous (non-blocking) InputStream
@@ -31,10 +33,15 @@
  * buffer, and that buffer is then consumed by another thread using
  * the regular #InputStream API.
  */
-class AsyncInputStream : public InputStream, private DeferredMonitor {
+class AsyncInputStream : public InputStream {
 	enum class SeekState : uint8_t {
 		NONE, SCHEDULED, PENDING
 	};
+
+	DeferredCall deferred_resume;
+	DeferredCall deferred_seek;
+
+	HugeAllocation allocation;
 
 	CircularBuffer<uint8_t> buffer;
 	const size_t resume_at;
@@ -59,27 +66,31 @@ class AsyncInputStream : public InputStream, private DeferredMonitor {
 	offset_type seek_offset;
 
 protected:
-	Error postponed_error;
+	std::exception_ptr postponed_exception;
 
 public:
 	/**
 	 * @param _buffer a buffer allocated with HugeAllocate(); the
 	 * destructor will free it using HugeFree()
 	 */
-	AsyncInputStream(const char *_url,
+	AsyncInputStream(EventLoop &event_loop, const char *_url,
 			 Mutex &_mutex, Cond &_cond,
-			 void *_buffer, size_t _buffer_size,
+			 size_t _buffer_size,
 			 size_t _resume_at);
 
 	virtual ~AsyncInputStream();
 
+	EventLoop &GetEventLoop() {
+		return deferred_resume.GetEventLoop();
+	}
+
 	/* virtual methods from InputStream */
-	bool Check(Error &error) final;
+	void Check() final;
 	bool IsEOF() final;
-	bool Seek(offset_type new_offset, Error &error) final;
+	void Seek(offset_type new_offset) final;
 	Tag *ReadTag() final;
 	bool IsAvailable() final;
-	size_t Read(void *ptr, size_t read_size, Error &error) final;
+	size_t Read(void *ptr, size_t read_size) final;
 
 protected:
 	/**
@@ -106,11 +117,6 @@ protected:
 		open = false;
 	}
 
-	/**
-	 * Pass an error from the I/O thread to the client thread.
-	 */
-	void PostponeError(Error &&error);
-
 	bool IsBufferEmpty() const {
 		return buffer.IsEmpty();
 	}
@@ -126,6 +132,12 @@ protected:
 	size_t GetBufferSpace() const {
 		return buffer.GetSpace();
 	}
+
+	CircularBuffer<uint8_t>::Range PrepareWriteBuffer() {
+		return buffer.Write();
+	}
+
+	void CommitWriteBuffer(size_t nbytes);
 
 	/**
 	 * Append data to the buffer.  The size must fit into the
@@ -159,8 +171,9 @@ protected:
 private:
 	void Resume();
 
-	/* virtual methods from DeferredMonitor */
-	void RunDeferred() final;
+	/* for DeferredCall */
+	void DeferredResume();
+	void DeferredSeek();
 };
 
 #endif

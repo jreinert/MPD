@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -30,17 +30,14 @@
 #include "Page.hxx"
 #include "IcyMetaDataServer.hxx"
 #include "system/fd_util.h"
-#include "IOThread.hxx"
 #include "event/Call.hxx"
-#include "util/Error.hxx"
+#include "util/RuntimeError.hxx"
 #include "util/Domain.hxx"
 #include "util/DeleteDisposer.hxx"
 #include "Log.hxx"
 
 #include <assert.h>
 
-#include <sys/types.h>
-#include <unistd.h>
 #include <string.h>
 #include <errno.h>
 
@@ -52,34 +49,58 @@
 const Domain httpd_output_domain("httpd_output");
 
 inline
-HttpdOutput::HttpdOutput(EventLoop &_loop)
+HttpdOutput::HttpdOutput(EventLoop &_loop, const ConfigBlock &block)
 	:ServerSocket(_loop), DeferredMonitor(_loop),
-	 base(httpd_output_plugin),
+	 base(httpd_output_plugin, block),
 	 encoder(nullptr), unflushed_input(0),
 	 metadata(nullptr)
 {
+	/* read configuration */
+	name = block.GetBlockValue("name", "Set name in config");
+	genre = block.GetBlockValue("genre", "Set genre in config");
+	website = block.GetBlockValue("website", "Set website in config");
+
+	unsigned port = block.GetBlockValue("port", 8000u);
+
+	const char *encoder_name =
+		block.GetBlockValue("encoder", "vorbis");
+	const auto encoder_plugin = encoder_plugin_get(encoder_name);
+	if (encoder_plugin == nullptr)
+		throw FormatRuntimeError("No such encoder: %s", encoder_name);
+
+	clients_max = block.GetBlockValue("max_clients", 0u);
+
+	/* set up bind_to_address */
+
+	const char *bind_to_address = block.GetBlockValue("bind_to_address");
+	if (bind_to_address != nullptr && strcmp(bind_to_address, "any") != 0)
+		AddHost(bind_to_address, port);
+	else
+		AddPort(port);
+
+	/* initialize encoder */
+
+	prepared_encoder = encoder_init(*encoder_plugin, block);
+
+	/* determine content type */
+	content_type = prepared_encoder->GetMimeType();
+	if (content_type == nullptr)
+		content_type = "application/octet-stream";
 }
 
 HttpdOutput::~HttpdOutput()
 {
-	if (metadata != nullptr)
-		metadata->Unref();
-
-	if (encoder != nullptr)
-		encoder->Dispose();
-
+	delete prepared_encoder;
 }
 
-inline bool
-HttpdOutput::Bind(Error &error)
+inline void
+HttpdOutput::Bind()
 {
 	open = false;
 
-	bool result = false;
-	BlockingCall(GetEventLoop(), [this, &error, &result](){
-			result = ServerSocket::Open(error);
+	BlockingCall(GetEventLoop(), [this](){
+			ServerSocket::Open();
 		});
-	return result;
 }
 
 inline void
@@ -92,75 +113,10 @@ HttpdOutput::Unbind()
 		});
 }
 
-inline bool
-HttpdOutput::Configure(const ConfigBlock &block, Error &error)
+HttpdOutput *
+HttpdOutput::Create(EventLoop &event_loop, const ConfigBlock &block)
 {
-	/* read configuration */
-	name = block.GetBlockValue("name", "Set name in config");
-	genre = block.GetBlockValue("genre", "Set genre in config");
-	website = block.GetBlockValue("website", "Set website in config");
-
-	unsigned port = block.GetBlockValue("port", 8000u);
-
-	const char *encoder_name =
-		block.GetBlockValue("encoder", "vorbis");
-	const auto encoder_plugin = encoder_plugin_get(encoder_name);
-	if (encoder_plugin == nullptr) {
-		error.Format(httpd_output_domain,
-			     "No such encoder: %s", encoder_name);
-		return false;
-	}
-
-	clients_max = block.GetBlockValue("max_clients", 0u);
-
-	/* set up bind_to_address */
-
-	const char *bind_to_address = block.GetBlockValue("bind_to_address");
-	bool success = bind_to_address != nullptr &&
-		strcmp(bind_to_address, "any") != 0
-		? AddHost(bind_to_address, port, error)
-		: AddPort(port, error);
-	if (!success)
-		return false;
-
-	/* initialize encoder */
-
-	encoder = encoder_init(*encoder_plugin, block, error);
-	if (encoder == nullptr)
-		return false;
-
-	/* determine content type */
-	content_type = encoder_get_mime_type(encoder);
-	if (content_type == nullptr)
-		content_type = "application/octet-stream";
-
-	return true;
-}
-
-inline bool
-HttpdOutput::Init(const ConfigBlock &block, Error &error)
-{
-	return base.Configure(block, error);
-}
-
-static AudioOutput *
-httpd_output_init(const ConfigBlock &block, Error &error)
-{
-	HttpdOutput *httpd = new HttpdOutput(io_thread_get());
-
-	AudioOutput *result = httpd->InitAndConfigure(block, error);
-	if (result == nullptr)
-		delete httpd;
-
-	return result;
-}
-
-static void
-httpd_output_finish(AudioOutput *ao)
-{
-	HttpdOutput *httpd = HttpdOutput::Cast(ao);
-
-	delete httpd;
+	return new HttpdOutput(event_loop, block);
 }
 
 /**
@@ -171,7 +127,7 @@ inline void
 HttpdOutput::AddClient(int fd)
 {
 	auto *client = new HttpdClient(*this, fd, GetEventLoop(),
-				       encoder->plugin.tag == nullptr);
+				       !encoder->ImplementsTag());
 	clients.push_front(*client);
 
 	/* pass metadata to client */
@@ -185,16 +141,14 @@ HttpdOutput::RunDeferred()
 	/* this method runs in the IOThread; it broadcasts pages from
 	   our own queue to all clients */
 
-	const ScopeLock protect(mutex);
+	const std::lock_guard<Mutex> protect(mutex);
 
 	while (!pages.empty()) {
-		Page *page = pages.front();
+		PagePtr page = std::move(pages.front());
 		pages.pop();
 
 		for (auto &client : clients)
 			client.PushPage(page);
-
-		page->Unref();
 	}
 
 	/* wake up the client that may be waiting for the queue to be
@@ -232,7 +186,7 @@ HttpdOutput::OnAccept(int fd, SocketAddress address, gcc_unused int uid)
 	(void)address;
 #endif	/* HAVE_WRAP */
 
-	const ScopeLock protect(mutex);
+	const std::lock_guard<Mutex> protect(mutex);
 
 	if (fd >= 0) {
 		/* can we allow additional client */
@@ -245,22 +199,26 @@ HttpdOutput::OnAccept(int fd, SocketAddress address, gcc_unused int uid)
 	}
 }
 
-Page *
+PagePtr
 HttpdOutput::ReadPage()
 {
 	if (unflushed_input >= 65536) {
 		/* we have fed a lot of input into the encoder, but it
 		   didn't give anything back yet - flush now to avoid
 		   buffer underruns */
-		encoder_flush(encoder, IgnoreError());
+		try {
+			encoder->Flush();
+		} catch (const std::runtime_error &) {
+			/* ignore */
+		}
+
 		unflushed_input = 0;
 	}
 
 	size_t size = 0;
 	do {
-		size_t nbytes = encoder_read(encoder,
-					     buffer + size,
-					     sizeof(buffer) - size);
+		size_t nbytes = encoder->Read(buffer + size,
+					      sizeof(buffer) - size);
 		if (nbytes == 0)
 			break;
 
@@ -272,30 +230,13 @@ HttpdOutput::ReadPage()
 	if (size == 0)
 		return nullptr;
 
-	return Page::Copy(buffer, size);
+	return std::make_shared<Page>(buffer, size);
 }
 
-static bool
-httpd_output_enable(AudioOutput *ao, Error &error)
+inline void
+HttpdOutput::OpenEncoder(AudioFormat &audio_format)
 {
-	HttpdOutput *httpd = HttpdOutput::Cast(ao);
-
-	return httpd->Bind(error);
-}
-
-static void
-httpd_output_disable(AudioOutput *ao)
-{
-	HttpdOutput *httpd = HttpdOutput::Cast(ao);
-
-	httpd->Unbind();
-}
-
-inline bool
-HttpdOutput::OpenEncoder(AudioFormat &audio_format, Error &error)
-{
-	if (!encoder->Open(audio_format, error))
-		return false;
+	encoder = prepared_encoder->Open(audio_format);
 
 	/* we have to remember the encoder header, i.e. the first
 	   bytes of encoder output after opening it, because it has to
@@ -303,38 +244,23 @@ HttpdOutput::OpenEncoder(AudioFormat &audio_format, Error &error)
 	header = ReadPage();
 
 	unflushed_input = 0;
-
-	return true;
 }
 
-inline bool
-HttpdOutput::Open(AudioFormat &audio_format, Error &error)
+inline void
+HttpdOutput::Open(AudioFormat &audio_format)
 {
 	assert(!open);
 	assert(clients.empty());
 
-	/* open the encoder */
+	const std::lock_guard<Mutex> protect(mutex);
 
-	if (!OpenEncoder(audio_format, error))
-		return false;
+	OpenEncoder(audio_format);
 
 	/* initialize other attributes */
 
 	timer = new Timer(audio_format);
 
 	open = true;
-
-	return true;
-}
-
-static bool
-httpd_output_open(AudioOutput *ao, AudioFormat &audio_format,
-		  Error &error)
-{
-	HttpdOutput *httpd = HttpdOutput::Cast(ao);
-
-	const ScopeLock protect(httpd->mutex);
-	return httpd->Open(audio_format, error);
 }
 
 inline void
@@ -342,27 +268,19 @@ HttpdOutput::Close()
 {
 	assert(open);
 
-	open = false;
-
 	delete timer;
 
 	BlockingCall(GetEventLoop(), [this](){
+			DeferredMonitor::Cancel();
+
+			const std::lock_guard<Mutex> protect(mutex);
+			open = false;
 			clients.clear_and_dispose(DeleteDisposer());
 		});
 
-	if (header != nullptr)
-		header->Unref();
+	header.reset();
 
-	encoder->Close();
-}
-
-static void
-httpd_output_close(AudioOutput *ao)
-{
-	HttpdOutput *httpd = HttpdOutput::Cast(ao);
-
-	const ScopeLock protect(httpd->mutex);
-	httpd->Close();
+	delete encoder;
 }
 
 void
@@ -381,7 +299,7 @@ HttpdOutput::SendHeader(HttpdClient &client) const
 		client.PushPage(header);
 }
 
-inline unsigned
+inline std::chrono::steady_clock::duration
 HttpdOutput::Delay() const
 {
 	if (!LockHasClients() && base.pause) {
@@ -394,31 +312,23 @@ HttpdOutput::Delay() const
 		/* some arbitrary delay that is long enough to avoid
 		   consuming too much CPU, and short enough to notice
 		   new clients quickly enough */
-		return 1000;
+		return std::chrono::seconds(1);
 	}
 
 	return timer->IsStarted()
 		? timer->GetDelay()
-		: 0;
-}
-
-static unsigned
-httpd_output_delay(AudioOutput *ao)
-{
-	HttpdOutput *httpd = HttpdOutput::Cast(ao);
-
-	return httpd->Delay();
+		: std::chrono::steady_clock::duration::zero();
 }
 
 void
-HttpdOutput::BroadcastPage(Page *page)
+HttpdOutput::BroadcastPage(PagePtr page)
 {
 	assert(page != nullptr);
 
-	mutex.lock();
-	pages.push(page);
-	page->Ref();
-	mutex.unlock();
+	{
+		const std::lock_guard<Mutex> lock(mutex);
+		pages.emplace(std::move(page));
+	}
 
 	DeferredMonitor::Schedule();
 }
@@ -427,38 +337,40 @@ void
 HttpdOutput::BroadcastFromEncoder()
 {
 	/* synchronize with the IOThread */
-	mutex.lock();
-	while (!pages.empty())
-		cond.wait(mutex);
+	{
+		const std::lock_guard<Mutex> lock(mutex);
+		while (!pages.empty())
+			cond.wait(mutex);
+	}
 
-	Page *page;
-	while ((page = ReadPage()) != nullptr)
-		pages.push(page);
+	bool empty = true;
 
-	mutex.unlock();
+	PagePtr page;
+	while ((page = ReadPage()) != nullptr) {
+		const std::lock_guard<Mutex> lock(mutex);
+		pages.emplace(std::move(page));
+		empty = false;
+	}
 
-	DeferredMonitor::Schedule();
+	if (!empty)
+		DeferredMonitor::Schedule();
 }
 
-inline bool
-HttpdOutput::EncodeAndPlay(const void *chunk, size_t size, Error &error)
+inline void
+HttpdOutput::EncodeAndPlay(const void *chunk, size_t size)
 {
-	if (!encoder_write(encoder, chunk, size, error))
-		return false;
+	encoder->Write(chunk, size);
 
 	unflushed_input += size;
 
 	BroadcastFromEncoder();
-	return true;
 }
 
 inline size_t
-HttpdOutput::Play(const void *chunk, size_t size, Error &error)
+HttpdOutput::Play(const void *chunk, size_t size)
 {
-	if (LockHasClients()) {
-		if (!EncodeAndPlay(chunk, size, error))
-			return 0;
-	}
+	if (LockHasClients())
+		EncodeAndPlay(chunk, size);
 
 	if (!timer->IsStarted())
 		timer->Start();
@@ -467,61 +379,53 @@ HttpdOutput::Play(const void *chunk, size_t size, Error &error)
 	return size;
 }
 
-static size_t
-httpd_output_play(AudioOutput *ao, const void *chunk, size_t size,
-		  Error &error)
+bool
+HttpdOutput::Pause()
 {
-	HttpdOutput *httpd = HttpdOutput::Cast(ao);
-
-	return httpd->Play(chunk, size, error);
-}
-
-static bool
-httpd_output_pause(AudioOutput *ao)
-{
-	HttpdOutput *httpd = HttpdOutput::Cast(ao);
-
-	if (httpd->LockHasClients()) {
+	if (LockHasClients()) {
 		static const char silence[1020] = { 0 };
-		return httpd_output_play(ao, silence, sizeof(silence),
-					 IgnoreError()) > 0;
-	} else {
-		return true;
+		Play(silence, sizeof(silence));
 	}
+
+	return true;
 }
 
 inline void
 HttpdOutput::SendTag(const Tag &tag)
 {
-	if (encoder->plugin.tag != nullptr) {
+	if (encoder->ImplementsTag()) {
 		/* embed encoder tags */
 
 		/* flush the current stream, and end it */
 
-		encoder_pre_tag(encoder, IgnoreError());
+		try {
+			encoder->PreTag();
+		} catch (const std::runtime_error &) {
+			/* ignore */
+		}
+
 		BroadcastFromEncoder();
 
 		/* send the tag to the encoder - which starts a new
 		   stream now */
 
-		encoder_tag(encoder, tag, IgnoreError());
+		try {
+			encoder->SendTag(tag);
+		} catch (const std::runtime_error &) {
+			/* ignore */
+		}
 
 		/* the first page generated by the encoder will now be
 		   used as the new "header" page, which is sent to all
 		   new clients */
 
-		Page *page = ReadPage();
+		auto page = ReadPage();
 		if (page != nullptr) {
-			if (header != nullptr)
-				header->Unref();
 			header = page;
 			BroadcastPage(page);
 		}
 	} else {
 		/* use Icy-Metadata */
-
-		if (metadata != nullptr)
-			metadata->Unref();
 
 		static constexpr TagType types[] = {
 			TAG_ALBUM, TAG_ARTIST, TAG_TITLE,
@@ -530,30 +434,21 @@ HttpdOutput::SendTag(const Tag &tag)
 
 		metadata = icy_server_metadata_page(tag, &types[0]);
 		if (metadata != nullptr) {
-			const ScopeLock protect(mutex);
+			const std::lock_guard<Mutex> protect(mutex);
 			for (auto &client : clients)
 				client.PushMetaData(metadata);
 		}
 	}
 }
 
-static void
-httpd_output_tag(AudioOutput *ao, const Tag &tag)
-{
-	HttpdOutput *httpd = HttpdOutput::Cast(ao);
-
-	httpd->SendTag(tag);
-}
-
 inline void
 HttpdOutput::CancelAllClients()
 {
-	const ScopeLock protect(mutex);
+	const std::lock_guard<Mutex> protect(mutex);
 
 	while (!pages.empty()) {
-		Page *page = pages.front();
+		PagePtr page = std::move(pages.front());
 		pages.pop();
-		page->Unref();
 	}
 
 	for (auto &client : clients)
@@ -562,30 +457,30 @@ HttpdOutput::CancelAllClients()
 	cond.broadcast();
 }
 
-static void
-httpd_output_cancel(AudioOutput *ao)
+void
+HttpdOutput::Cancel()
 {
-	HttpdOutput *httpd = HttpdOutput::Cast(ao);
-
-	BlockingCall(io_thread_get(), [httpd](){
-			httpd->CancelAllClients();
+	BlockingCall(GetEventLoop(), [this](){
+			CancelAllClients();
 		});
 }
+
+typedef AudioOutputWrapper<HttpdOutput> Wrapper;
 
 const struct AudioOutputPlugin httpd_output_plugin = {
 	"httpd",
 	nullptr,
-	httpd_output_init,
-	httpd_output_finish,
-	httpd_output_enable,
-	httpd_output_disable,
-	httpd_output_open,
-	httpd_output_close,
-	httpd_output_delay,
-	httpd_output_tag,
-	httpd_output_play,
+	&Wrapper::Init,
+	&Wrapper::Finish,
+	&Wrapper::Enable,
+	&Wrapper::Disable,
+	&Wrapper::Open,
+	&Wrapper::Close,
+	&Wrapper::Delay,
+	&Wrapper::SendTag,
+	&Wrapper::Play,
 	nullptr,
-	httpd_output_cancel,
-	httpd_output_pause,
+	&Wrapper::Cancel,
+	&Wrapper::Pause,
 	nullptr,
 };

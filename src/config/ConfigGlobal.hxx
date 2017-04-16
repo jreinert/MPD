@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -23,10 +23,11 @@
 #include "ConfigOption.hxx"
 #include "Compiler.h"
 
-class Error;
+#include <chrono>
+
 class Path;
 class AllocatedPath;
-struct config_param;
+struct ConfigParam;
 struct ConfigBlock;
 
 void
@@ -46,7 +47,7 @@ void
 ReadConfigFile(Path path);
 
 gcc_pure
-const config_param *
+const ConfigParam *
 config_get_param(enum ConfigOption option);
 
 gcc_pure
@@ -78,27 +79,40 @@ config_get_string(enum ConfigOption option, const char *default_value=nullptr);
 /**
  * Returns an optional configuration variable which contains an
  * absolute path.  If there is a tilde prefix, it is expanded.
- * Returns AllocatedPath::Null() if the value is not present.  If the path
- * could not be parsed, returns AllocatedPath::Null() and sets the error.
+ * Returns AllocatedPath::Null() if the value is not present.
+ *
+ * Throws #std::runtime_error on error.
  */
 AllocatedPath
-config_get_path(enum ConfigOption option, Error &error);
-
-/**
- * Parse a configuration parameter as a path.
- * If there is a tilde prefix, it is expanded. If the path could
- * not be parsed, returns AllocatedPath::Null() and sets the error.
- */
-AllocatedPath
-config_parse_path(const struct config_param *param, Error & error_r);
+config_get_path(enum ConfigOption option);
 
 gcc_pure
 unsigned
 config_get_unsigned(enum ConfigOption option, unsigned default_value);
 
 gcc_pure
+static inline std::chrono::steady_clock::duration
+config_get_unsigned(ConfigOption option,
+		    std::chrono::steady_clock::duration default_value)
+{
+	// TODO: allow unit suffixes
+	auto u = config_get_unsigned(option, default_value.count());
+	return std::chrono::steady_clock::duration(u);
+}
+
+gcc_pure
 unsigned
 config_get_positive(enum ConfigOption option, unsigned default_value);
+
+gcc_pure
+static inline std::chrono::steady_clock::duration
+config_get_positive(ConfigOption option,
+		    std::chrono::steady_clock::duration default_value)
+{
+	// TODO: allow unit suffixes
+	auto u = config_get_positive(option, default_value.count());
+	return std::chrono::steady_clock::duration(u);
+}
 
 gcc_pure
 bool config_get_bool(enum ConfigOption option, bool default_value);

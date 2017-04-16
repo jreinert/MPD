@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -34,15 +34,15 @@ AudioOutput::~AudioOutput()
 	if (mixer != nullptr)
 		mixer_free(mixer);
 
-	delete replay_gain_filter;
-	delete other_replay_gain_filter;
-	delete filter;
+	delete prepared_replay_gain_filter;
+	delete prepared_other_replay_gain_filter;
+	delete prepared_filter;
 }
 
 void
 audio_output_free(AudioOutput *ao)
 {
-	assert(!ao->open);
+	assert(!ao->IsOpen());
 	assert(!ao->fail_timer.IsDefined());
 	assert(!ao->thread.IsDefined());
 

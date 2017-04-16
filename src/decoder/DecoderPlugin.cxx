@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -31,8 +31,8 @@ DecoderPlugin::SupportsSuffix(const char *suffix) const
 	assert(suffix != nullptr);
 #endif
 
-	return suffixes != nullptr && string_array_contains(suffixes, suffix);
-
+	return suffixes != nullptr &&
+		StringArrayContainsCase(suffixes, suffix);
 }
 
 bool
@@ -44,5 +44,5 @@ DecoderPlugin::SupportsMimeType(const char *mime_type) const
 #endif
 
 	return mime_types != nullptr &&
-		string_array_contains(mime_types, mime_type);
+		StringArrayContainsCase(mime_types, mime_type);
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -30,34 +30,7 @@ io_thread_init();
 void
 io_thread_start();
 
-/**
- * Run the I/O event loop synchronously in the current thread.  This
- * can be called instead of io_thread_start().  For testing purposes
- * only.
- */
-void
-io_thread_run();
-
-/**
- * Ask the I/O thread to quit, but does not wait for it.  Usually, you
- * don't need to call this function, because io_thread_deinit()
- * includes this.
- */
-void
-io_thread_quit();
-
 void
 io_thread_deinit();
-
-gcc_const
-EventLoop &
-io_thread_get();
-
-/**
- * Is the current thread the I/O thread?
- */
-gcc_pure
-bool
-io_thread_inside();
 
 #endif

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -21,8 +21,9 @@
 #include "AllocatedPath.hxx"
 #include "Domain.hxx"
 #include "Charset.hxx"
-#include "util/Error.hxx"
 #include "Compiler.h"
+
+#include <stdexcept>
 
 /* no inlining, please */
 AllocatedPath::~AllocatedPath() {}
@@ -31,22 +32,24 @@ AllocatedPath
 AllocatedPath::FromUTF8(const char *path_utf8)
 {
 #if defined(HAVE_FS_CHARSET) || defined(WIN32)
-	return AllocatedPath(::PathFromUTF8(path_utf8));
+	try {
+		return AllocatedPath(::PathFromUTF8(path_utf8));
+	} catch (const std::runtime_error &) {
+		return nullptr;
+	}
 #else
 	return FromFS(path_utf8);
 #endif
 }
 
 AllocatedPath
-AllocatedPath::FromUTF8(const char *path_utf8, Error &error)
+AllocatedPath::FromUTF8Throw(const char *path_utf8)
 {
-	AllocatedPath path = FromUTF8(path_utf8);
-	if (path.IsNull())
-		error.Format(path_domain,
-			     "Failed to convert to file system charset: %s",
-			     path_utf8);
-
-	return path;
+#if defined(HAVE_FS_CHARSET) || defined(WIN32)
+	return AllocatedPath(::PathFromUTF8(path_utf8));
+#else
+	return FromFS(path_utf8);
+#endif
 }
 
 AllocatedPath
@@ -58,7 +61,11 @@ AllocatedPath::GetDirectoryName() const
 std::string
 AllocatedPath::ToUTF8() const
 {
-	return ::PathToUTF8(c_str());
+	try {
+		return ::PathToUTF8(c_str());
+	} catch (const std::runtime_error &) {
+		return std::string();
+	}
 }
 
 void

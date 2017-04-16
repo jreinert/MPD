@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -22,23 +22,20 @@
 #include "Request.hxx"
 #include "db/DatabasePlaylist.hxx"
 #include "CommandError.hxx"
-#include "PlaylistPrint.hxx"
 #include "PlaylistSave.hxx"
 #include "PlaylistFile.hxx"
+#include "PlaylistError.hxx"
 #include "db/PlaylistVector.hxx"
 #include "SongLoader.hxx"
 #include "BulkEdit.hxx"
 #include "playlist/PlaylistQueue.hxx"
 #include "playlist/Print.hxx"
-#include "queue/Playlist.hxx"
 #include "TimePrint.hxx"
 #include "client/Client.hxx"
 #include "client/Response.hxx"
-#include "ls.hxx"
 #include "Mapper.hxx"
 #include "fs/AllocatedPath.hxx"
 #include "util/UriUtil.hxx"
-#include "util/Error.hxx"
 #include "util/ConstBuffer.hxx"
 
 bool
@@ -61,7 +58,7 @@ print_spl_list(Response &r, const PlaylistVector &list)
 CommandResult
 handle_save(Client &client, Request args, gcc_unused Response &r)
 {
-	spl_save_playlist(args.front(), client.playlist);
+	spl_save_playlist(args.front(), client.GetPlaylist());
 	return CommandResult::OK;
 }
 
@@ -70,14 +67,13 @@ handle_load(Client &client, Request args, gcc_unused Response &r)
 {
 	RangeArg range = args.ParseOptional(1, RangeArg::All());
 
-	const ScopeBulkEdit bulk_edit(client.partition);
+	const ScopeBulkEdit bulk_edit(client.GetPartition());
 
-	Error error;
 	const SongLoader loader(client);
 	playlist_open_into_queue(args.front(),
 				 range.start, range.end,
-				 client.playlist,
-				 client.player_control, loader);
+				 client.GetPlaylist(),
+				 client.GetPlayerControl(), loader);
 	return CommandResult::OK;
 }
 
@@ -86,12 +82,11 @@ handle_listplaylist(Client &client, Request args, Response &r)
 {
 	const char *const name = args.front();
 
-	if (playlist_file_print(r, client.partition, SongLoader(client),
+	if (playlist_file_print(r, client.GetPartition(), SongLoader(client),
 				name, false))
 		return CommandResult::OK;
 
-	spl_print(r, client.partition, name, false);
-	return CommandResult::OK;
+	throw PlaylistError::NoSuchList();
 }
 
 CommandResult
@@ -99,12 +94,11 @@ handle_listplaylistinfo(Client &client, Request args, Response &r)
 {
 	const char *const name = args.front();
 
-	if (playlist_file_print(r, client.partition, SongLoader(client),
+	if (playlist_file_print(r, client.GetPartition(), SongLoader(client),
 				name, true))
 		return CommandResult::OK;
 
-	spl_print(r, client.partition, name, true);
-	return CommandResult::OK;
+	throw PlaylistError::NoSuchList();
 }
 
 CommandResult
@@ -160,36 +154,27 @@ handle_playlistclear(gcc_unused Client &client,
 }
 
 CommandResult
-handle_playlistadd(Client &client, Request args, Response &r)
+handle_playlistadd(Client &client, Request args, gcc_unused Response &r)
 {
 	const char *const playlist = args[0];
 	const char *const uri = args[1];
 
-	bool success;
-	Error error;
 	if (uri_has_scheme(uri)) {
 		const SongLoader loader(client);
-		success = spl_append_uri(playlist, loader, uri, error);
+		spl_append_uri(playlist, loader, uri);
 	} else {
 #ifdef ENABLE_DATABASE
-		const Database *db = client.GetDatabase(error);
-		if (db == nullptr)
-			return print_error(r, error);
+		const Database &db = client.GetDatabaseOrThrow();
 
-		success = search_add_to_playlist(*db, *client.GetStorage(),
-						 uri, playlist, nullptr,
-						 error);
+		search_add_to_playlist(db, client.GetStorage(),
+				       uri, playlist, nullptr);
 #else
-		success = false;
+		r.Error(ACK_ERROR_NO_EXIST, "directory or file not found");
+		return CommandResult::ERROR;
 #endif
 	}
 
-	if (!success && !error.IsDefined()) {
-		r.Error(ACK_ERROR_NO_EXIST, "directory or file not found");
-		return CommandResult::ERROR;
-	}
-
-	return success ? CommandResult::OK : print_error(r, error);
+	return CommandResult::OK;
 }
 
 CommandResult

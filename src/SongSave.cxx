@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -24,19 +24,17 @@
 #include "TagSave.hxx"
 #include "fs/io/TextFile.hxx"
 #include "fs/io/BufferedOutputStream.hxx"
+#include "tag/ParseName.hxx"
 #include "tag/Tag.hxx"
-#include "tag/TagBuilder.hxx"
+#include "tag/Builder.hxx"
 #include "util/StringUtil.hxx"
-#include "util/Error.hxx"
-#include "util/Domain.hxx"
+#include "util/RuntimeError.hxx"
 
 #include <string.h>
 #include <stdlib.h>
 
 #define SONG_MTIME "mtime"
 #define SONG_END "song_end"
-
-static constexpr Domain song_save_domain("song_save");
 
 static void
 range_save(BufferedOutputStream &os, unsigned start_ms, unsigned end_ms)
@@ -74,8 +72,7 @@ song_save(BufferedOutputStream &os, const DetachedSong &song)
 }
 
 DetachedSong *
-song_load(TextFile &file, const char *uri,
-	  Error &error)
+song_load(TextFile &file, const char *uri)
 {
 	DetachedSong *song = new DetachedSong(uri);
 
@@ -88,9 +85,7 @@ song_load(TextFile &file, const char *uri,
 		if (colon == nullptr || colon == line) {
 			delete song;
 
-			error.Format(song_save_domain,
-				     "unknown line in db: %s", line);
-			return nullptr;
+			throw FormatRuntimeError("unknown line in db: %s", line);
 		}
 
 		*colon++ = 0;
@@ -118,9 +113,7 @@ song_load(TextFile &file, const char *uri,
 		} else {
 			delete song;
 
-			error.Format(song_save_domain,
-				     "unknown line in db: %s", line);
-			return nullptr;
+			throw FormatRuntimeError("unknown line in db: %s", line);
 		}
 	}
 

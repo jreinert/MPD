@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -20,13 +20,11 @@
 #include "config.h"
 #include "WildmidiDecoderPlugin.hxx"
 #include "../DecoderAPI.hxx"
-#include "tag/TagHandler.hxx"
-#include "util/Error.hxx"
+#include "tag/Handler.hxx"
 #include "util/Domain.hxx"
 #include "fs/AllocatedPath.hxx"
 #include "fs/FileSystem.hxx"
 #include "fs/Path.hxx"
-#include "system/FatalError.hxx"
 #include "Log.hxx"
 
 extern "C" {
@@ -40,13 +38,9 @@ static constexpr unsigned WILDMIDI_SAMPLE_RATE = 48000;
 static bool
 wildmidi_init(const ConfigBlock &block)
 {
-	Error error;
 	const AllocatedPath path =
-		block.GetBlockPath("config_file",
-				   "/etc/timidity/timidity.cfg",
-				   error);
-	if (path.IsNull())
-		FatalError(error);
+		block.GetPath("config_file",
+			      "/etc/timidity/timidity.cfg");
 
 	if (!FileExists(path)) {
 		const auto utf8 = path.ToUTF8();
@@ -65,8 +59,26 @@ wildmidi_finish(void)
 	WildMidi_Shutdown();
 }
 
+static DecoderCommand
+wildmidi_output(DecoderClient &client, midi *wm)
+{
+#ifdef LIBWILDMIDI_VER_MAJOR
+	/* WildMidi 0.4 has switched from "char*" to "int8_t*" */
+	int8_t buffer[4096];
+#else
+	/* pre 0.4 */
+	char buffer[4096];
+#endif
+
+	int length = WildMidi_GetOutput(wm, buffer, sizeof(buffer));
+	if (length <= 0)
+		return DecoderCommand::STOP;
+
+	return client.SubmitData(nullptr, buffer, length, 0);
+}
+
 static void
-wildmidi_file_decode(Decoder &decoder, Path path_fs)
+wildmidi_file_decode(DecoderClient &client, Path path_fs)
 {
 	static constexpr AudioFormat audio_format = {
 		WILDMIDI_SAMPLE_RATE,
@@ -90,29 +102,21 @@ wildmidi_file_decode(Decoder &decoder, Path path_fs)
 		SongTime::FromScale<uint64_t>(info->approx_total_samples,
 					      WILDMIDI_SAMPLE_RATE);
 
-	decoder_initialized(decoder, audio_format, true, duration);
+	client.Ready(audio_format, true, duration);
 
 	DecoderCommand cmd;
 	do {
-		char buffer[4096];
-		int len;
-
 		info = WildMidi_GetInfo(wm);
 		if (info == nullptr)
 			break;
 
-		len = WildMidi_GetOutput(wm, buffer, sizeof(buffer));
-		if (len <= 0)
-			break;
-
-		cmd = decoder_data(decoder, nullptr, buffer, len, 0);
+		cmd = wildmidi_output(client, wm);
 
 		if (cmd == DecoderCommand::SEEK) {
-			unsigned long seek_where =
-				decoder_seek_where_frame(decoder);
+			unsigned long seek_where = client.GetSeekFrame();
 
 			WildMidi_FastSeek(wm, &seek_where);
-			decoder_command_finished(decoder);
+			client.CommandFinished();
 			cmd = DecoderCommand::NONE;
 		}
 

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -27,7 +27,7 @@
 #define OUTPUT_ALL_H
 
 #include "AudioFormat.hxx"
-#include "ReplayGainInfo.hxx"
+#include "ReplayGainMode.hxx"
 #include "Chrono.hxx"
 #include "Compiler.h"
 
@@ -35,39 +35,38 @@
 
 #include <assert.h>
 
-struct AudioFormat;
 class MusicBuffer;
 class MusicPipe;
 class EventLoop;
 class MixerListener;
+class AudioOutputClient;
 struct MusicChunk;
-struct PlayerControl;
 struct AudioOutput;
-class Error;
+struct ReplayGainConfig;
 
 class MultipleOutputs {
 	MixerListener &mixer_listener;
 
 	std::vector<AudioOutput *> outputs;
 
-	AudioFormat input_audio_format;
+	AudioFormat input_audio_format = AudioFormat::Undefined();
 
 	/**
 	 * The #MusicBuffer object where consumed chunks are returned.
 	 */
-	MusicBuffer *buffer;
+	MusicBuffer *buffer = nullptr;
 
 	/**
 	 * The #MusicPipe object which feeds all audio outputs.  It is
 	 * filled by audio_output_all_play().
 	 */
-	MusicPipe *pipe;
+	MusicPipe *pipe = nullptr;
 
 	/**
 	 * The "elapsed_time" stamp of the most recently finished
 	 * chunk.
 	 */
-	SignedSongTime elapsed_time;
+	SignedSongTime elapsed_time = SignedSongTime::Negative();
 
 public:
 	/**
@@ -77,7 +76,13 @@ public:
 	MultipleOutputs(MixerListener &_mixer_listener);
 	~MultipleOutputs();
 
-	void Configure(EventLoop &event_loop, PlayerControl &pc);
+	void Configure(EventLoop &event_loop,
+		       const ReplayGainConfig &replay_gain_config,
+		       AudioOutputClient &client);
+
+	void AddNullOutput(EventLoop &event_loop,
+			   const ReplayGainConfig &replay_gain_config,
+			   AudioOutputClient &client);
 
 	/**
 	 * Returns the total number of audio output devices, including
@@ -119,13 +124,13 @@ public:
 	/**
 	 * Opens all audio outputs which are not disabled.
 	 *
+	 * Throws #std::runtime_error on error.
+	 *
 	 * @param audio_format the preferred audio format
 	 * @param _buffer the #music_buffer where consumed #MusicChunk objects
 	 * should be returned
-	 * @return true on success, false on failure
 	 */
-	bool Open(const AudioFormat audio_format, MusicBuffer &_buffer,
-		  Error &error);
+	void Open(const AudioFormat audio_format, MusicBuffer &_buffer);
 
 	/**
 	 * Closes all audio outputs.
@@ -144,11 +149,11 @@ public:
 	 * Enqueue a #MusicChunk object for playing, i.e. pushes it to a
 	 * #MusicPipe.
 	 *
+	 * Throws #std::runtime_error on error (all closed then).
+	 *
 	 * @param chunk the #MusicChunk object to be played
-	 * @return true on success, false if no audio output was able to play
-	 * (all closed then)
 	 */
-	bool Play(MusicChunk *chunk, Error &error);
+	void Play(MusicChunk *chunk);
 
 	/**
 	 * Checks if the output devices have drained their music pipe, and
@@ -157,16 +162,6 @@ public:
 	 * @return the number of chunks to play left in the #MusicPipe
 	 */
 	unsigned Check();
-
-	/**
-	 * Checks if the size of the #MusicPipe is below the #threshold.  If
-	 * not, it attempts to synchronize with all output threads, and waits
-	 * until another #MusicChunk is finished.
-	 *
-	 * @param threshold the maximum number of chunks in the pipe
-	 * @return true if there are less than #threshold chunks in the pipe
-	 */
-	bool Wait(PlayerControl &pc, unsigned threshold);
 
 	/**
 	 * Puts all audio outputs into pause mode.  Most implementations will
@@ -246,19 +241,12 @@ private:
 	void AllowPlay();
 
 	/**
-	 * Resets the "reopen" flag on all audio devices.  MPD should
-	 * immediately retry to open the device instead of waiting for
-	 * the timeout when the user wants to start playback.
-	 */
-	void ResetReopen();
-
-	/**
 	 * Opens all output devices which are enabled, but closed.
 	 *
 	 * @return true if there is at least open output device which
 	 * is open
 	 */
-	bool Update();
+	bool Update(bool force);
 
 	/**
 	 * Has this chunk been consumed by all audio outputs?

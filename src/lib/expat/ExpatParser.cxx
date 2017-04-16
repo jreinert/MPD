@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -19,49 +19,15 @@
 
 #include "config.h"
 #include "ExpatParser.hxx"
-#include "input/InputStream.hxx"
 #include "util/ASCII.hxx"
-#include "util/Error.hxx"
-#include "util/Domain.hxx"
 
 #include <string.h>
-
-static constexpr Domain expat_domain("expat");
-
-void
-ExpatParser::SetError(Error &error)
-{
-	XML_Error code = XML_GetErrorCode(parser);
-	error.Format(expat_domain, int(code), "XML parser failed: %s",
-		     XML_ErrorString(code));
-}
 
 void
 ExpatParser::Parse(const char *data, size_t length, bool is_final)
 {
 	if (XML_Parse(parser, data, length, is_final) != XML_STATUS_OK)
 		throw ExpatError(parser);
-}
-
-bool
-ExpatParser::Parse(InputStream &is, Error &error)
-{
-	assert(is.IsReady());
-
-	while (true) {
-		char buffer[4096];
-		size_t nbytes = is.LockRead(buffer, sizeof(buffer), error);
-		if (nbytes == 0)
-			break;
-
-		Parse(buffer, nbytes, false);
-	}
-
-	if (error.IsDefined())
-		return false;
-
-	Parse("", 0, true);
-	return true;
 }
 
 const char *

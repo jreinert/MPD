@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -19,22 +19,16 @@
 
 #include "config.h"
 #include "ArchivePlugin.hxx"
-#include "ArchiveFile.hxx"
 #include "fs/Path.hxx"
-#include "util/Error.hxx"
 
 #include <assert.h>
 
 ArchiveFile *
-archive_file_open(const ArchivePlugin *plugin, Path path,
-		  Error &error)
+archive_file_open(const ArchivePlugin *plugin, Path path)
 {
 	assert(plugin != nullptr);
 	assert(plugin->open != nullptr);
 	assert(!path.IsNull());
 
-	ArchiveFile *file = plugin->open(path, error);
-	assert((file == nullptr) == error.IsDefined());
-
-	return file;
+	return plugin->open(path);
 }

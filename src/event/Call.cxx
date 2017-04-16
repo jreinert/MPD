@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -25,6 +25,8 @@
 #include "thread/Cond.hxx"
 #include "Compiler.h"
 
+#include <exception>
+
 #include <assert.h>
 
 class BlockingCallMonitor final
@@ -36,6 +38,8 @@ class BlockingCallMonitor final
 	Cond cond;
 
 	bool done;
+
+	std::exception_ptr exception;
 
 public:
 	BlockingCallMonitor(EventLoop &_loop, std::function<void()> &&_f)
@@ -50,13 +54,20 @@ public:
 		while (!done)
 			cond.wait(mutex);
 		mutex.unlock();
+
+		if (exception)
+			std::rethrow_exception(exception);
 	}
 
 private:
 	virtual void RunDeferred() override {
 		assert(!done);
 
-		f();
+		try {
+			f();
+		} catch (...) {
+			exception = std::current_exception();
+		}
 
 		mutex.lock();
 		done = true;
@@ -68,7 +79,7 @@ private:
 void
 BlockingCall(EventLoop &loop, std::function<void()> &&f)
 {
-	if (loop.IsInside()) {
+	if (loop.IsInsideOrNull()) {
 		/* we're already inside the loop - we can simply call
 		   the function */
 		f();

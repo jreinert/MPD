@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -34,13 +34,11 @@
 #include <shlobj.h>
 #else
 #include <stdlib.h>
-#include <sys/types.h>
 #include <unistd.h>
 #include <pwd.h>
 #endif
 
 #ifdef USE_XDG
-#include "util/Error.hxx"
 #include "util/StringUtil.hxx"
 #include "util/StringCompare.hxx"
 #include "io/TextFile.hxx"
@@ -55,7 +53,7 @@
 #include "Main.hxx"
 #endif
 
-#ifndef WIN32
+#if !defined(WIN32) && !defined(ANDROID)
 class PasswdEntry
 {
 #if defined(HAVE_GETPWNAM_R) || defined(HAVE_GETPWUID_R)
@@ -92,23 +90,28 @@ public:
 };
 #endif
 
-static inline bool IsValidPathString(PathTraitsFS::const_pointer path)
+#ifndef ANDROID
+static inline bool
+IsValidPathString(PathTraitsFS::const_pointer_type path)
 {
 	return path != nullptr && *path != '\0';
 }
 
-static inline bool IsValidDir(PathTraitsFS::const_pointer dir)
+static inline bool
+IsValidDir(PathTraitsFS::const_pointer_type dir)
 {
 	return PathTraitsFS::IsAbsolute(dir) &&
 	       DirectoryExists(Path::FromFS(dir));
 }
 
-static inline AllocatedPath SafePathFromFS(PathTraitsFS::const_pointer dir)
+static inline AllocatedPath
+SafePathFromFS(PathTraitsFS::const_pointer_type dir)
 {
 	if (IsValidPathString(dir) && IsValidDir(dir))
 		return AllocatedPath::FromFS(dir);
 	return AllocatedPath::Null();
 }
+#endif
 
 #ifdef WIN32
 static AllocatedPath GetStandardDir(int folder_id)
@@ -308,21 +311,27 @@ AllocatedPath GetAppBaseDir()
 
 AllocatedPath GetHomeDir()
 {
+#ifndef ANDROID
 	auto home = getenv("HOME");
 	if (IsValidPathString(home) && IsValidDir(home))
 		return AllocatedPath::FromFS(home);
 	PasswdEntry pw;
 	if (pw.ReadByUid(getuid()))
 		return SafePathFromFS(pw->pw_dir);
+#endif
 	return AllocatedPath::Null();
 }
 
 AllocatedPath GetHomeDir(const char *user_name)
 {
+#ifdef ANDROID
+	(void)user_name;
+#else
 	assert(user_name != nullptr);
 	PasswdEntry pw;
 	if (pw.ReadByName(user_name))
 		return SafePathFromFS(pw->pw_dir);
+#endif
 	return AllocatedPath::Null();
 }
 

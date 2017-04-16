@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -25,13 +25,11 @@
 class Database;
 class Storage;
 class SongFilter;
-class Error;
 
 gcc_nonnull(3,4)
-bool
-search_add_to_playlist(const Database &db, const Storage &storage,
+void
+search_add_to_playlist(const Database &db, const Storage *storage,
 		       const char *uri, const char *path_utf8,
-		       const SongFilter *filter,
-		       Error &error);
+		       const SongFilter *filter);
 
 #endif

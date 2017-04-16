@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -43,9 +43,7 @@ static constexpr unsigned DEVICE_INARCHIVE = -1;
  */
 static constexpr unsigned DEVICE_CONTAINER = -2;
 
-struct db_visitor;
 class SongFilter;
-class Error;
 class Database;
 
 struct Directory {
@@ -86,17 +84,17 @@ struct Directory {
 
 	PlaylistVector playlists;
 
-	Directory *parent;
-	time_t mtime;
-	unsigned inode, device;
+	Directory *const parent;
+	time_t mtime = 0;
+	unsigned inode = 0, device = 0;
 
-	std::string path;
+	const std::string path;
 
 	/**
 	 * If this is not nullptr, then this directory does not really
 	 * exist, but is a mount point for another #Database.
 	 */
-	Database *mounted_database;
+	Database *mounted_database = nullptr;
 
 public:
 	Directory(std::string &&_path_utf8, Directory *_parent);
@@ -267,10 +265,9 @@ public:
 	/**
 	 * Caller must lock #db_mutex.
 	 */
-	bool Walk(bool recursive, const SongFilter *match,
+	void Walk(bool recursive, const SongFilter *match,
 		  VisitDirectory visit_directory, VisitSong visit_song,
-		  VisitPlaylist visit_playlist,
-		  Error &error) const;
+		  VisitPlaylist visit_playlist) const;
 
 	gcc_pure
 	LightDirectory Export() const;

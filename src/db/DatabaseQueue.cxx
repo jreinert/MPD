@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -27,25 +27,21 @@
 
 #include <functional>
 
-static bool
+static void
 AddToQueue(Partition &partition, const LightSong &song)
 {
-	const Storage &storage = *partition.instance.storage;
+	const auto *storage = partition.instance.storage;
 	partition.playlist.AppendSong(partition.pc,
 				      DatabaseDetachSong(storage,
 							 song));
-	return true;
 }
 
-bool
-AddFromDatabase(Partition &partition, const DatabaseSelection &selection,
-		Error &error)
+void
+AddFromDatabase(Partition &partition, const DatabaseSelection &selection)
 {
-	const Database *db = partition.instance.GetDatabase(error);
-	if (db == nullptr)
-		return false;
+	const Database &db = partition.instance.GetDatabaseOrThrow();
 
 	using namespace std::placeholders;
 	const auto f = std::bind(AddToQueue, std::ref(partition), _1);
-	return db->Visit(selection, f, error);
+	db.Visit(selection, f);
 }

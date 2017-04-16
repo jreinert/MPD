@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -20,18 +20,14 @@
 #ifndef MPD_PCM_VOLUME_HXX
 #define MPD_PCM_VOLUME_HXX
 
-#include "AudioFormat.hxx"
+#include "SampleFormat.hxx"
 #include "PcmBuffer.hxx"
 #include "PcmDither.hxx"
-
-#include <stdint.h>
-#include <stddef.h>
 
 #ifndef NDEBUG
 #include <assert.h>
 #endif
 
-class Error;
 template<typename T> struct ConstBuffer;
 
 /**
@@ -44,8 +40,6 @@ static constexpr unsigned PCM_VOLUME_BITS = 10;
  */
 static constexpr unsigned PCM_VOLUME_1 = 1024;
 static constexpr int PCM_VOLUME_1S = PCM_VOLUME_1;
-
-struct AudioFormat;
 
 /**
  * Converts a float value (0.0 = silence, 1.0 = 100% volume) to an
@@ -82,12 +76,6 @@ public:
 #endif
 	}
 
-#ifndef NDEBUG
-	~PcmVolume() {
-		assert(format == SampleFormat::UNDEFINED);
-	}
-#endif
-
 	unsigned GetVolume() const {
 		return volume;
 	}
@@ -104,11 +92,11 @@ public:
 	/**
 	 * Opens the object, prepare for Apply().
 	 *
+	 * Throws std::runtime_error on error.
+	 *
 	 * @param format the sample format
-	 * @param error location to store the error
-	 * @return true on success
 	 */
-	bool Open(SampleFormat format, Error &error);
+	void Open(SampleFormat format);
 
 	/**
 	 * Closes the object.  After that, you may call Open() again.

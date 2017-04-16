@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -104,7 +104,7 @@ Strip(char *p);
  */
 gcc_pure
 bool
-string_array_contains(const char *const* haystack, const char *needle);
+StringArrayContainsCase(const char *const*haystack, const char *needle);
 
 /**
  * Convert the specified ASCII string (0x00..0x7f) to upper case.

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -21,8 +21,7 @@
 #include "OpenALOutputPlugin.hxx"
 #include "../OutputAPI.hxx"
 #include "../Wrapper.hxx"
-#include "util/Error.hxx"
-#include "util/Domain.hxx"
+#include "util/RuntimeError.hxx"
 
 #include <unistd.h>
 
@@ -51,28 +50,25 @@ class OpenALOutput {
 	ALenum format;
 	ALuint frequency;
 
-	OpenALOutput()
-		:base(openal_output_plugin) {}
+	OpenALOutput(const ConfigBlock &block);
 
-	bool Configure(const ConfigBlock &block, Error &error);
+	static OpenALOutput *Create(EventLoop &event_loop,
+				    const ConfigBlock &block);
 
-	static OpenALOutput *Create(const ConfigBlock &block, Error &error);
-
-	bool Open(AudioFormat &audio_format, Error &error);
-
+	void Open(AudioFormat &audio_format);
 	void Close();
 
 	gcc_pure
-	unsigned Delay() const {
+	std::chrono::steady_clock::duration Delay() const {
 		return filled < NUM_BUFFERS || HasProcessed()
-			? 0
+			? std::chrono::steady_clock::duration::zero()
 			/* we don't know exactly how long we must wait
 			   for the next buffer to finish, so this is a
 			   random guess: */
-			: 50;
+			: std::chrono::milliseconds(50);
 	}
 
-	size_t Play(const void *chunk, size_t size, Error &error);
+	size_t Play(const void *chunk, size_t size);
 
 	void Cancel();
 
@@ -94,10 +90,11 @@ private:
 		return GetSourceI(AL_SOURCE_STATE) == AL_PLAYING;
 	}
 
-	bool SetupContext(Error &error);
+	/**
+	 * Throws #std::runtime_error on error.
+	 */
+	void SetupContext();
 };
-
-static constexpr Domain openal_output_domain("openal_output");
 
 static ALenum
 openal_audio_format(AudioFormat &audio_format)
@@ -124,86 +121,59 @@ openal_audio_format(AudioFormat &audio_format)
 	}
 }
 
-inline bool
-OpenALOutput::SetupContext(Error &error)
+inline void
+OpenALOutput::SetupContext()
 {
 	device = alcOpenDevice(device_name);
-
-	if (device == nullptr) {
-		error.Format(openal_output_domain,
-			     "Error opening OpenAL device \"%s\"",
-			     device_name);
-		return false;
-	}
+	if (device == nullptr)
+		throw FormatRuntimeError("Error opening OpenAL device \"%s\"",
+					 device_name);
 
 	context = alcCreateContext(device, nullptr);
-
 	if (context == nullptr) {
-		error.Format(openal_output_domain,
-			     "Error creating context for \"%s\"",
-			     device_name);
 		alcCloseDevice(device);
-		return false;
+		throw FormatRuntimeError("Error creating context for \"%s\"",
+					 device_name);
 	}
-
-	return true;
 }
 
-inline bool
-OpenALOutput::Configure(const ConfigBlock &block, Error &error)
+OpenALOutput::OpenALOutput(const ConfigBlock &block)
+	:base(openal_output_plugin, block),
+	 device_name(block.GetBlockValue("device"))
 {
-	if (!base.Configure(block, error))
-		return false;
-
-	device_name = block.GetBlockValue("device");
 	if (device_name == nullptr)
 		device_name = alcGetString(nullptr,
 					   ALC_DEFAULT_DEVICE_SPECIFIER);
-
-	return true;
 }
 
 inline OpenALOutput *
-OpenALOutput::Create(const ConfigBlock &block, Error &error)
+OpenALOutput::Create(EventLoop &, const ConfigBlock &block)
 {
-	OpenALOutput *oo = new OpenALOutput();
-
-	if (!oo->Configure(block, error)) {
-		delete oo;
-		return nullptr;
-	}
-
-	return oo;
+	return new OpenALOutput(block);
 }
 
-inline bool
-OpenALOutput::Open(AudioFormat &audio_format, Error &error)
+inline void
+OpenALOutput::Open(AudioFormat &audio_format)
 {
 	format = openal_audio_format(audio_format);
 
-	if (!SetupContext(error))
-		return false;
+	SetupContext();
 
 	alcMakeContextCurrent(context);
 	alGenBuffers(NUM_BUFFERS, buffers);
 
-	if (alGetError() != AL_NO_ERROR) {
-		error.Set(openal_output_domain, "Failed to generate buffers");
-		return false;
-	}
+	if (alGetError() != AL_NO_ERROR)
+		throw std::runtime_error("Failed to generate buffers");
 
 	alGenSources(1, &source);
 
 	if (alGetError() != AL_NO_ERROR) {
-		error.Set(openal_output_domain, "Failed to generate source");
 		alDeleteBuffers(NUM_BUFFERS, buffers);
-		return false;
+		throw std::runtime_error("Failed to generate source");
 	}
 
 	filled = 0;
 	frequency = audio_format.sample_rate;
-
-	return true;
 }
 
 inline void
@@ -217,7 +187,7 @@ OpenALOutput::Close()
 }
 
 inline size_t
-OpenALOutput::Play(const void *chunk, size_t size, gcc_unused Error &error)
+OpenALOutput::Play(const void *chunk, size_t size)
 {
 	if (alcGetCurrentContext() != context)
 		alcMakeContextCurrent(context);

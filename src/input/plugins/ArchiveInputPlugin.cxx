@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -25,26 +25,30 @@
 #include "archive/ArchivePlugin.hxx"
 #include "archive/ArchiveFile.hxx"
 #include "../InputPlugin.hxx"
-#include "fs/Traits.hxx"
+#include "../InputStream.hxx"
 #include "fs/Path.hxx"
-#include "util/Alloc.hxx"
 #include "Log.hxx"
+#include "util/ScopeExit.hxx"
+
+#include <stdexcept>
 
 #include <stdlib.h>
 
-InputStream *
-OpenArchiveInputStream(Path path, Mutex &mutex, Cond &cond, Error &error)
+InputStreamPtr
+OpenArchiveInputStream(Path path, Mutex &mutex, Cond &cond)
 {
 	const ArchivePlugin *arplug;
-	InputStream *is;
 
 	char *pname = strdup(path.c_str());
+	AtScopeExit(pname) {
+		free(pname);
+	};
+
 	// archive_lookup will modify pname when true is returned
 	const char *archive, *filename, *suffix;
 	if (!archive_lookup(pname, &archive, &filename, &suffix)) {
 		FormatDebug(archive_domain,
 			    "not an archive, lookup %s failed", pname);
-		free(pname);
 		return nullptr;
 	}
 
@@ -53,28 +57,21 @@ OpenArchiveInputStream(Path path, Mutex &mutex, Cond &cond, Error &error)
 	if (!arplug) {
 		FormatWarning(archive_domain,
 			      "can't handle archive %s", archive);
-		free(pname);
 		return nullptr;
 	}
 
-	auto file = archive_file_open(arplug, Path::FromFS(archive), error);
-	if (file == nullptr) {
-		free(pname);
-		return nullptr;
-	}
+	auto file = archive_file_open(arplug, Path::FromFS(archive));
 
-	//setup fileops
-	is = file->OpenStream(filename, mutex, cond, error);
-	free(pname);
-	file->Close();
+	AtScopeExit(file) {
+		file->Close();
+	};
 
-	return is;
+	return InputStreamPtr(file->OpenStream(filename, mutex, cond));
 }
 
 static InputStream *
 input_archive_open(gcc_unused const char *filename,
-		gcc_unused Mutex &mutex, gcc_unused Cond &cond,
-		gcc_unused Error &error)
+		   gcc_unused Mutex &mutex, gcc_unused Cond &cond)
 {
 	/* dummy method; use OpenArchiveInputStream() instead */
 

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -20,13 +20,17 @@
 #ifndef MPD_PLAYER_CONTROL_HXX
 #define MPD_PLAYER_CONTROL_HXX
 
+#include "output/Client.hxx"
 #include "AudioFormat.hxx"
 #include "thread/Mutex.hxx"
 #include "thread/Cond.hxx"
 #include "thread/Thread.hxx"
-#include "util/Error.hxx"
 #include "CrossFade.hxx"
 #include "Chrono.hxx"
+#include "ReplayGainConfig.hxx"
+#include "ReplayGainMode.hxx"
+
+#include <exception>
 
 #include <stdint.h>
 
@@ -93,7 +97,7 @@ struct player_status {
 	SongTime elapsed_time;
 };
 
-struct PlayerControl {
+struct PlayerControl final : AudioOutputClient {
 	PlayerListener &listener;
 
 	MultipleOutputs &outputs;
@@ -101,6 +105,11 @@ struct PlayerControl {
 	const unsigned buffer_chunks;
 
 	const unsigned buffered_before_play;
+
+	/**
+	 * The "audio_output_format" setting.
+	 */
+	const AudioFormat configured_audio_format;
 
 	/**
 	 * The handle of the player thread.
@@ -124,18 +133,18 @@ struct PlayerControl {
 	 */
 	Cond client_cond;
 
-	PlayerCommand command;
-	PlayerState state;
+	PlayerCommand command = PlayerCommand::NONE;
+	PlayerState state = PlayerState::STOP;
 
-	PlayerError error_type;
+	PlayerError error_type = PlayerError::NONE;
 
 	/**
 	 * The error that occurred in the player thread.  This
-	 * attribute is only valid if #error is not
+	 * attribute is only valid if #error_type is not
 	 * #PlayerError::NONE.  The object must be freed when this
 	 * object transitions back to #PlayerError::NONE.
 	 */
-	Error error;
+	std::exception_ptr error;
 
 	/**
 	 * A copy of the current #DetachedSong after its tags have
@@ -147,7 +156,7 @@ struct PlayerControl {
 	 * Protected by #mutex.  Set by the PlayerThread and consumed
 	 * by the main thread.
 	 */
-	DetachedSong *tagged_song;
+	DetachedSong *tagged_song = nullptr;
 
 	uint16_t bit_rate;
 	AudioFormat audio_format;
@@ -160,13 +169,16 @@ struct PlayerControl {
 	 * This is a duplicate, and must be freed when this attribute
 	 * is cleared.
 	 */
-	DetachedSong *next_song;
+	DetachedSong *next_song = nullptr;
 
 	SongTime seek_time;
 
 	CrossFadeSettings cross_fade;
 
-	double total_play_time;
+	const ReplayGainConfig replay_gain_config;
+	ReplayGainMode replay_gain_mode = ReplayGainMode::OFF;
+
+	double total_play_time = 0;
 
 	/**
 	 * If this flag is set, then the player will be auto-paused at
@@ -175,12 +187,14 @@ struct PlayerControl {
 	 * This is a copy of the queue's "single" flag most of the
 	 * time.
 	 */
-	bool border_pause;
+	bool border_pause = false;
 
 	PlayerControl(PlayerListener &_listener,
 		      MultipleOutputs &_outputs,
 		      unsigned buffer_chunks,
-		      unsigned buffered_before_play);
+		      unsigned buffered_before_play,
+		      AudioFormat _configured_audio_format,
+		      const ReplayGainConfig &_replay_gain_config);
 	~PlayerControl();
 
 	/**
@@ -210,7 +224,7 @@ struct PlayerControl {
 	 * this function.
 	 */
 	void LockSignal() {
-		const ScopeLock protect(mutex);
+		const std::lock_guard<Mutex> protect(mutex);
 		Signal();
 	}
 
@@ -263,8 +277,25 @@ struct PlayerControl {
 	}
 
 	void LockCommandFinished() {
-		const ScopeLock protect(mutex);
+		const std::lock_guard<Mutex> protect(mutex);
 		CommandFinished();
+	}
+
+	/**
+	 * Checks if the size of the #MusicPipe is below the #threshold.  If
+	 * not, it attempts to synchronize with all output threads, and waits
+	 * until another #MusicChunk is finished.
+	 *
+	 * Caller must lock the mutex.
+	 *
+	 * @param threshold the maximum number of chunks in the pipe
+	 * @return true if there are less than #threshold chunks in the pipe
+	 */
+	bool WaitOutputConsumed(unsigned threshold);
+
+	bool LockWaitOutputConsumed(unsigned threshold) {
+		const std::lock_guard<Mutex> protect(mutex);
+		return WaitOutputConsumed(threshold);
 	}
 
 private:
@@ -302,16 +333,18 @@ private:
 	 * object.
 	 */
 	void LockSynchronousCommand(PlayerCommand cmd) {
-		const ScopeLock protect(mutex);
+		const std::lock_guard<Mutex> protect(mutex);
 		SynchronousCommand(cmd);
 	}
 
 public:
 	/**
+	 * Throws std::runtime_error or #Error on error.
+	 *
 	 * @param song the song to be queued; the given instance will
 	 * be owned and freed by the player
 	 */
-	bool Play(DetachedSong *song, Error &error);
+	void Play(DetachedSong *song);
 
 	/**
 	 * see PlayerCommand::CANCEL
@@ -325,7 +358,7 @@ private:
 
 	void ClearError() {
 		error_type = PlayerError::NONE;
-		error.Clear();
+		error = std::exception_ptr();
 	}
 
 public:
@@ -335,6 +368,17 @@ public:
 	 * Set the player's #border_pause flag.
 	 */
 	void LockSetBorderPause(bool border_pause);
+
+	bool ApplyBorderPause() {
+		if (border_pause)
+			state = PlayerState::PAUSE;
+		return border_pause;
+	}
+
+	bool LockApplyBorderPause() {
+		const std::lock_guard<Mutex> lock(mutex);
+		return ApplyBorderPause();
+	}
 
 	void Kill();
 
@@ -351,31 +395,42 @@ public:
 	 * Caller must lock the object.
 	 *
 	 * @param type the error type; must not be #PlayerError::NONE
-	 * @param error detailed error information; must be defined.
 	 */
-	void SetError(PlayerError type, Error &&error);
+	void SetError(PlayerError type, std::exception_ptr &&_error);
 
 	/**
-	 * Checks whether an error has occurred, and if so, returns a
-	 * copy of the #Error object.
-	 *
-	 * Caller must lock the object.
+	 * Set the error and set state to PlayerState::PAUSE.
 	 */
-	gcc_pure
-	Error GetError() const {
-		Error result;
-		if (error_type != PlayerError::NONE)
-			result.Set(error);
-		return result;
+	void SetOutputError(std::exception_ptr &&_error) {
+		SetError(PlayerError::OUTPUT, std::move(_error));
+
+		/* pause: the user may resume playback as soon as an
+		   audio output becomes available */
+		state = PlayerState::PAUSE;
+	}
+
+	void LockSetOutputError(std::exception_ptr &&_error) {
+		const std::lock_guard<Mutex> lock(mutex);
+		SetOutputError(std::move(_error));
 	}
 
 	/**
-	 * Like GetError(), but locks and unlocks the object.
+	 * Checks whether an error has occurred, and if so, rethrows
+	 * it.
+	 *
+	 * Caller must lock the object.
 	 */
-	gcc_pure
-	Error LockGetError() const {
-		const ScopeLock protect(mutex);
-		return GetError();
+	void CheckRethrowError() const {
+		if (error_type != PlayerError::NONE)
+			std::rethrow_exception(error);
+	}
+
+	/**
+	 * Like CheckRethrowError(), but locks and unlocks the object.
+	 */
+	void LockCheckRethrowError() const {
+		const std::lock_guard<Mutex> protect(mutex);
+		CheckRethrowError();
 	}
 
 	void LockClearError();
@@ -407,7 +462,7 @@ public:
 	 * Like ReadTaggedSong(), but locks and unlocks the object.
 	 */
 	DetachedSong *LockReadTaggedSong() {
-		const ScopeLock protect(mutex);
+		const std::lock_guard<Mutex> protect(mutex);
 		return ReadTaggedSong();
 	}
 
@@ -425,7 +480,10 @@ private:
 		SynchronousCommand(PlayerCommand::QUEUE);
 	}
 
-	bool SeekLocked(DetachedSong *song, SongTime t, Error &error_r);
+	/**
+	 * Throws std::runtime_error or #Error on error.
+	 */
+	void SeekLocked(DetachedSong *song, SongTime t);
 
 public:
 	/**
@@ -437,12 +495,12 @@ public:
 	/**
 	 * Makes the player thread seek the specified song to a position.
 	 *
+	 * Throws std::runtime_error or #Error on error.
+	 *
 	 * @param song the song to be queued; the given instance will be owned
 	 * and freed by the player
-	 * @return true on success, false on failure (e.g. if MPD isn't
-	 * playing currently)
 	 */
-	bool LockSeek(DetachedSong *song, SongTime t, Error &error_r);
+	void LockSeek(DetachedSong *song, SongTime t);
 
 	void SetCrossFade(float cross_fade_seconds);
 
@@ -462,9 +520,26 @@ public:
 		return cross_fade.mixramp_delay;
 	}
 
+	void LockSetReplayGainMode(ReplayGainMode _mode) {
+		const std::lock_guard<Mutex> protect(mutex);
+		replay_gain_mode = _mode;
+	}
+
 	double GetTotalPlayTime() const {
 		return total_play_time;
 	}
+
+	/* virtual methods from AudioOutputClient */
+	void ChunksConsumed() override {
+		LockSignal();
+	}
+
+	void ApplyEnabled() override {
+		LockUpdateAudio();
+	}
+
+private:
+	void RunThread();
 };
 
 #endif

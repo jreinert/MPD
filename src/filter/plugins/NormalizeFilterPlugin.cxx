@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -29,44 +29,45 @@
 #include <string.h>
 
 class NormalizeFilter final : public Filter {
-	struct Compressor *compressor;
+	Compressor *const compressor;
 
 	PcmBuffer buffer;
 
 public:
+	NormalizeFilter(const AudioFormat &audio_format)
+		:Filter(audio_format), compressor(Compressor_new(0)) {
+	}
+
+	~NormalizeFilter() {
+		Compressor_delete(compressor);
+	}
+
 	/* virtual methods from class Filter */
-	AudioFormat Open(AudioFormat &af, Error &error) override;
-	void Close() override;
-	ConstBuffer<void> FilterPCM(ConstBuffer<void> src,
-				    Error &error) override;
+	ConstBuffer<void> FilterPCM(ConstBuffer<void> src) override;
 };
 
-static Filter *
-normalize_filter_init(gcc_unused const ConfigBlock &block,
-		      gcc_unused Error &error)
+class PreparedNormalizeFilter final : public PreparedFilter {
+public:
+	/* virtual methods from class PreparedFilter */
+	Filter *Open(AudioFormat &af) override;
+};
+
+static PreparedFilter *
+normalize_filter_init(gcc_unused const ConfigBlock &block)
 {
-	return new NormalizeFilter();
+	return new PreparedNormalizeFilter();
 }
 
-AudioFormat
-NormalizeFilter::Open(AudioFormat &audio_format, gcc_unused Error &error)
+Filter *
+PreparedNormalizeFilter::Open(AudioFormat &audio_format)
 {
 	audio_format.format = SampleFormat::S16;
 
-	compressor = Compressor_new(0);
-
-	return audio_format;
-}
-
-void
-NormalizeFilter::Close()
-{
-	buffer.Clear();
-	Compressor_delete(compressor);
+	return new NormalizeFilter(audio_format);
 }
 
 ConstBuffer<void>
-NormalizeFilter::FilterPCM(ConstBuffer<void> src, gcc_unused Error &error)
+NormalizeFilter::FilterPCM(ConstBuffer<void> src)
 {
 	int16_t *dest = (int16_t *)buffer.Get(src.size);
 	memcpy(dest, src.data, src.size);
@@ -75,7 +76,7 @@ NormalizeFilter::FilterPCM(ConstBuffer<void> src, gcc_unused Error &error)
 	return { (const void *)dest, src.size };
 }
 
-const struct filter_plugin normalize_filter_plugin = {
+const FilterPlugin normalize_filter_plugin = {
 	"normalize",
 	normalize_filter_init,
 };

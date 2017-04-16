@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -23,15 +23,17 @@
 #include "MusicPipe.hxx"
 #include "DetachedSong.hxx"
 
+#include <stdexcept>
+
 #include <assert.h>
 
-DecoderControl::DecoderControl(Mutex &_mutex, Cond &_client_cond)
-	:mutex(_mutex), client_cond(_client_cond),
-	 state(DecoderState::STOP),
-	 command(DecoderCommand::NONE),
-	 client_is_waiting(false),
-	 song(nullptr),
-	 replay_gain_db(0), replay_gain_prev_db(0) {}
+DecoderControl::DecoderControl(Mutex &_mutex, Cond &_client_cond,
+			       const AudioFormat _configured_audio_format,
+			       const ReplayGainConfig &_replay_gain_config)
+	:thread(BIND_THIS_METHOD(RunThread)),
+	 mutex(_mutex), client_cond(_client_cond),
+	 configured_audio_format(_configured_audio_format),
+	 replay_gain_config(_replay_gain_config) {}
 
 DecoderControl::~DecoderControl()
 {
@@ -50,6 +52,26 @@ DecoderControl::WaitForDecoder()
 
 	assert(client_is_waiting);
 	client_is_waiting = false;
+}
+
+void
+DecoderControl::SetReady(const AudioFormat audio_format,
+			 bool _seekable, SignedSongTime _duration)
+{
+	assert(state == DecoderState::START);
+	assert(pipe != nullptr);
+	assert(pipe->IsEmpty());
+	assert(audio_format.IsDefined());
+	assert(audio_format.IsValid());
+
+	in_audio_format = audio_format;
+	out_audio_format = audio_format.WithMask(configured_audio_format);
+
+	seekable = _seekable;
+	total_time = _duration;
+
+	state = DecoderState::DECODE;
+	client_cond.signal();
 }
 
 bool
@@ -74,6 +96,8 @@ DecoderControl::Start(DetachedSong *_song,
 		      SongTime _start_time, SongTime _end_time,
 		      MusicBuffer &_buffer, MusicPipe &_pipe)
 {
+	const std::lock_guard<Mutex> protect(mutex);
+
 	assert(_song != nullptr);
 	assert(_pipe.IsEmpty());
 
@@ -84,13 +108,14 @@ DecoderControl::Start(DetachedSong *_song,
 	buffer = &_buffer;
 	pipe = &_pipe;
 
-	LockSynchronousCommand(DecoderCommand::START);
+	ClearError();
+	SynchronousCommandLocked(DecoderCommand::START);
 }
 
 void
 DecoderControl::Stop()
 {
-	const ScopeLock protect(mutex);
+	const std::lock_guard<Mutex> protect(mutex);
 
 	if (command != DecoderCommand::NONE)
 		/* Attempt to cancel the current command.  If it's too
@@ -103,9 +128,11 @@ DecoderControl::Stop()
 		SynchronousCommandLocked(DecoderCommand::STOP);
 }
 
-bool
-DecoderControl::Seek(SongTime t, Error &error_r)
+void
+DecoderControl::Seek(SongTime t)
 {
+	const std::lock_guard<Mutex> protect(mutex);
+
 	assert(state != DecoderState::START);
 	assert(state != DecoderState::ERROR);
 
@@ -117,28 +144,21 @@ DecoderControl::Seek(SongTime t, Error &error_r)
 	case DecoderState::STOP:
 		/* TODO: if this happens, the caller should be given a
 		   chance to restart the decoder */
-		error_r.Set(decoder_domain, "Decoder is dead");
-		return false;
+		throw std::runtime_error("Decoder is dead");
 
 	case DecoderState::DECODE:
 		break;
 	}
 
-	if (!seekable) {
-		error_r.Set(decoder_domain, "Not seekable");
-		return false;
-	}
+	if (!seekable)
+		throw std::runtime_error("Not seekable");
 
 	seek_time = t;
 	seek_error = false;
-	LockSynchronousCommand(DecoderCommand::SEEK);
+	SynchronousCommandLocked(DecoderCommand::SEEK);
 
-	if (seek_error) {
-		error_r.Set(decoder_domain, "Decoder failed to seek");
-		return false;
-	}
-
-	return true;
+	if (seek_error)
+		throw std::runtime_error("Decoder failed to seek");
 }
 
 void

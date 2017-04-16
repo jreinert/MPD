@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -21,15 +21,12 @@
 #include "CompositeStorage.hxx"
 #include "FileInfo.hxx"
 #include "fs/AllocatedPath.hxx"
-#include "util/Error.hxx"
-#include "util/Domain.hxx"
 #include "util/StringCompare.hxx"
 
 #include <set>
+#include <stdexcept>
 
 #include <string.h>
-
-static constexpr Domain composite_domain("composite");
 
 /**
  * Combines the directory entries of another #StorageDirectoryReader
@@ -57,7 +54,7 @@ public:
 
 	/* virtual methods from class StorageDirectoryReader */
 	const char *Read() override;
-	bool GetInfo(bool follow, StorageFileInfo &info, Error &error) override;
+	StorageFileInfo GetInfo(bool follow) override;
 };
 
 const char *
@@ -81,20 +78,15 @@ CompositeDirectoryReader::Read()
 	return current->c_str();
 }
 
-bool
-CompositeDirectoryReader::GetInfo(bool follow, StorageFileInfo &info,
-				  Error &error)
+StorageFileInfo
+CompositeDirectoryReader::GetInfo(bool follow)
 {
 	if (other != nullptr)
-		return other->GetInfo(follow, info, error);
+		return other->GetInfo(follow);
 
 	assert(current != names.end());
 
-	info.type = StorageFileInfo::Type::DIRECTORY;
-	info.mtime = 0;
-	info.device = 0;
-	info.inode = 0;
-	return true;
+	return StorageFileInfo(StorageFileInfo::Type::DIRECTORY);
 }
 
 static std::string
@@ -216,7 +208,7 @@ CompositeStorage::~CompositeStorage()
 Storage *
 CompositeStorage::GetMount(const char *uri)
 {
-	const ScopeLock protect(mutex);
+	const std::lock_guard<Mutex> protect(mutex);
 
 	auto result = FindStorage(uri);
 	if (*result.uri != 0)
@@ -229,7 +221,7 @@ CompositeStorage::GetMount(const char *uri)
 void
 CompositeStorage::Mount(const char *uri, Storage *storage)
 {
-	const ScopeLock protect(mutex);
+	const std::lock_guard<Mutex> protect(mutex);
 
 	Directory &directory = root.Make(uri);
 	if (directory.storage != nullptr)
@@ -240,7 +232,7 @@ CompositeStorage::Mount(const char *uri, Storage *storage)
 bool
 CompositeStorage::Unmount(const char *uri)
 {
-	const ScopeLock protect(mutex);
+	const std::lock_guard<Mutex> protect(mutex);
 
 	return root.Unmount(uri);
 }
@@ -266,65 +258,62 @@ CompositeStorage::FindStorage(const char *uri) const
 	return result;
 }
 
-CompositeStorage::FindResult
-CompositeStorage::FindStorage(const char *uri, Error &error) const
+StorageFileInfo
+CompositeStorage::GetInfo(const char *uri, bool follow)
 {
-	auto result = FindStorage(uri);
-	if (result.directory == nullptr)
-		error.Set(composite_domain, "No such directory");
-	return result;
-}
+	const std::lock_guard<Mutex> protect(mutex);
 
-bool
-CompositeStorage::GetInfo(const char *uri, bool follow, StorageFileInfo &info,
-			  Error &error)
-{
-	const ScopeLock protect(mutex);
+	std::exception_ptr error;
 
-	auto f = FindStorage(uri, error);
-	if (f.directory->storage != nullptr &&
-	    f.directory->storage->GetInfo(f.uri, follow, info, error))
-		return true;
-
-	const Directory *directory = f.directory->Find(f.uri);
-	if (directory != nullptr) {
-		error.Clear();
-		info.type = StorageFileInfo::Type::DIRECTORY;
-		info.mtime = 0;
-		info.device = 0;
-		info.inode = 0;
-		return true;
+	auto f = FindStorage(uri);
+	if (f.directory->storage != nullptr) {
+		try {
+			return f.directory->storage->GetInfo(f.uri, follow);
+		} catch (...) {
+			error = std::current_exception();
+		}
 	}
 
-	return false;
+	const Directory *directory = f.directory->Find(f.uri);
+	if (directory != nullptr)
+		return StorageFileInfo(StorageFileInfo::Type::DIRECTORY);
+
+	if (error)
+		std::rethrow_exception(error);
+	else
+		throw std::runtime_error("No such file or directory");
 }
 
 StorageDirectoryReader *
-CompositeStorage::OpenDirectory(const char *uri,
-				Error &error)
+CompositeStorage::OpenDirectory(const char *uri)
 {
-	const ScopeLock protect(mutex);
+	const std::lock_guard<Mutex> protect(mutex);
 
-	auto f = FindStorage(uri, error);
+	auto f = FindStorage(uri);
 	const Directory *directory = f.directory->Find(f.uri);
 	if (directory == nullptr || directory->children.empty()) {
 		/* no virtual directories here */
 
 		if (f.directory->storage == nullptr)
-			return nullptr;
+			throw std::runtime_error("No such directory");
 
-		return f.directory->storage->OpenDirectory(f.uri, error);
+		return f.directory->storage->OpenDirectory(f.uri);
 	}
 
-	StorageDirectoryReader *other =
-		f.directory->storage->OpenDirectory(f.uri, IgnoreError());
+	StorageDirectoryReader *other = nullptr;
+
+	try {
+		other = f.directory->storage->OpenDirectory(f.uri);
+	} catch (const std::runtime_error &) {
+	}
+
 	return new CompositeDirectoryReader(other, directory->children);
 }
 
 std::string
 CompositeStorage::MapUTF8(const char *uri) const
 {
-	const ScopeLock protect(mutex);
+	const std::lock_guard<Mutex> protect(mutex);
 
 	auto f = FindStorage(uri);
 	if (f.directory->storage == nullptr)
@@ -336,7 +325,7 @@ CompositeStorage::MapUTF8(const char *uri) const
 AllocatedPath
 CompositeStorage::MapFS(const char *uri) const
 {
-	const ScopeLock protect(mutex);
+	const std::lock_guard<Mutex> protect(mutex);
 
 	auto f = FindStorage(uri);
 	if (f.directory->storage == nullptr)
@@ -348,7 +337,7 @@ CompositeStorage::MapFS(const char *uri) const
 const char *
 CompositeStorage::MapToRelativeUTF8(const char *uri) const
 {
-	const ScopeLock protect(mutex);
+	const std::lock_guard<Mutex> protect(mutex);
 
 	if (root.storage != nullptr) {
 		const char *result = root.storage->MapToRelativeUTF8(uri);

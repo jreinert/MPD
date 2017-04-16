@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -20,17 +20,17 @@
 #include "config.h"
 #include "fs/io/FileOutputStream.hxx"
 #include "Log.hxx"
-#include "util/Error.hxx"
 
 #include <unistd.h>
 #include <errno.h>
+
 #include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
 
 static bool
 Copy(OutputStream &dest, int src)
 {
-	Error error;
-
 	while (true) {
 		uint8_t buffer[8192];
 		ssize_t nbytes = read(src, buffer, sizeof(buffer));

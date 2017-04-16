@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -22,7 +22,7 @@
 
 #include <FLAC/stream_decoder.h>
 
-struct Decoder;
+class DecoderClient;
 class InputStream;
 
 /**
@@ -30,14 +30,22 @@ class InputStream;
  * callbacks.
  */
 class FlacInput {
-	Decoder *const decoder;
+	DecoderClient *const client;
 
 	InputStream &input_stream;
 
 public:
 	FlacInput(InputStream &_input_stream,
-		  Decoder *_decoder=nullptr)
-		:decoder(_decoder), input_stream(_input_stream) {}
+		  DecoderClient *_client=nullptr)
+		:client(_client), input_stream(_input_stream) {}
+
+	DecoderClient *GetClient() {
+		return client;
+	}
+
+	InputStream &GetInputStream() {
+		return input_stream;
+	}
 
 protected:
 	FLAC__StreamDecoderReadStatus Read(FLAC__byte buffer[], size_t *bytes);

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -26,7 +26,6 @@
 #include "net/SocketAddress.hxx"
 #include "net/ToString.hxx"
 #include "Permission.hxx"
-#include "util/Error.hxx"
 #include "Log.hxx"
 
 #include <assert.h>
@@ -46,15 +45,14 @@ Client::Client(EventLoop &_loop, Partition &_partition,
 	       int _fd, int _uid, int _num)
 	:FullyBufferedSocket(_fd, _loop, 16384, client_max_output_buffer_size),
 	 TimeoutMonitor(_loop),
-	 partition(_partition),
-	 playlist(partition.playlist), player_control(partition.pc),
+	 partition(&_partition),
 	 permission(getDefaultPermissions()),
 	 uid(_uid),
 	 num(_num),
 	 idle_waiting(false), idle_flags(0),
 	 num_subscriptions(0)
 {
-	TimeoutMonitor::ScheduleSeconds(client_timeout);
+	TimeoutMonitor::Schedule(client_timeout);
 }
 
 void
@@ -109,7 +107,7 @@ client_new(EventLoop &loop, Partition &partition,
 void
 Client::Close()
 {
-	partition.instance.client_list->Remove(*this);
+	partition->instance.client_list->Remove(*this);
 
 	SetExpired();
 

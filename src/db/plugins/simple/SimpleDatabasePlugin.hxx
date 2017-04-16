@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -50,7 +50,7 @@ class SimpleDatabase : public Database {
 
 	Directory *root;
 
-	time_t mtime;
+	std::chrono::system_clock::time_point mtime;
 
 	/**
 	 * A buffer for GetSong() when prefixing the #LightSong
@@ -67,14 +67,13 @@ class SimpleDatabase : public Database {
 	mutable unsigned borrowed_song_count;
 #endif
 
-	SimpleDatabase();
+	SimpleDatabase(const ConfigBlock &block);
 
 	SimpleDatabase(AllocatedPath &&_path, bool _compress);
 
 public:
 	static Database *Create(EventLoop &loop, DatabaseListener &listener,
-				const ConfigBlock &block,
-				Error &error);
+				const ConfigBlock &block);
 
 	gcc_pure
 	Directory &GetRoot() {
@@ -89,7 +88,7 @@ public:
 	 * Returns true if there is a valid database file on the disk.
 	 */
 	bool FileExists() const {
-		return mtime > 0;
+		return mtime >= std::chrono::system_clock::time_point(std::chrono::system_clock::duration::zero());
 	}
 
 	/**
@@ -99,47 +98,46 @@ public:
 	gcc_nonnull_all
 	void Mount(const char *uri, Database *db);
 
+	/**
+	 * Throws #std::runtime_error on error.
+	 */
 	gcc_nonnull_all
-	bool Mount(const char *local_uri, const char *storage_uri,
-		   Error &error);
+	void Mount(const char *local_uri, const char *storage_uri);
 
 	gcc_nonnull_all
 	bool Unmount(const char *uri);
 
 	/* virtual methods from class Database */
-	virtual bool Open(Error &error) override;
-	virtual void Close() override;
+	void Open() override;
+	void Close() override;
 
-	const LightSong *GetSong(const char *uri_utf8,
-				 Error &error) const override;
+	const LightSong *GetSong(const char *uri_utf8) const override;
 	void ReturnSong(const LightSong *song) const override;
 
-	virtual bool Visit(const DatabaseSelection &selection,
-			   VisitDirectory visit_directory,
-			   VisitSong visit_song,
-			   VisitPlaylist visit_playlist,
-			   Error &error) const override;
+	void Visit(const DatabaseSelection &selection,
+		   VisitDirectory visit_directory,
+		   VisitSong visit_song,
+		   VisitPlaylist visit_playlist) const override;
 
-	virtual bool VisitUniqueTags(const DatabaseSelection &selection,
-				     TagType tag_type, tag_mask_t group_mask,
-				     VisitTag visit_tag,
-				     Error &error) const override;
+	void VisitUniqueTags(const DatabaseSelection &selection,
+			     TagType tag_type, TagMask group_mask,
+			     VisitTag visit_tag) const override;
 
-	virtual bool GetStats(const DatabaseSelection &selection,
-			      DatabaseStats &stats,
-			      Error &error) const override;
+	DatabaseStats GetStats(const DatabaseSelection &selection) const override;
 
-	virtual time_t GetUpdateStamp() const override {
+	std::chrono::system_clock::time_point GetUpdateStamp() const override {
 		return mtime;
 	}
 
 private:
-	bool Configure(const ConfigBlock &block, Error &error);
+	void Configure(const ConfigBlock &block);
 
-	gcc_pure
-	bool Check(Error &error) const;
+	void Check() const;
 
-	bool Load(Error &error);
+	/**
+	 * Throws #std::runtime_error on error.
+	 */
+	void Load();
 
 	Database *LockUmountSteal(const char *uri);
 };

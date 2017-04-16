@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -28,10 +28,11 @@
 
 ThreadInputStream::~ThreadInputStream()
 {
-	Lock();
-	close = true;
-	wake_cond.signal();
-	Unlock();
+	{
+		const std::lock_guard<Mutex> lock(mutex);
+		close = true;
+		wake_cond.signal();
+	}
 
 	Cancel();
 
@@ -44,34 +45,30 @@ ThreadInputStream::~ThreadInputStream()
 	}
 }
 
-InputStream *
-ThreadInputStream::Start(Error &error)
+void
+ThreadInputStream::Start()
 {
 	assert(buffer == nullptr);
 
 	void *p = HugeAllocate(buffer_size);
-	if (p == nullptr) {
-		error.SetErrno();
-		return nullptr;
-	}
+	assert(p != nullptr);
 
 	buffer = new CircularBuffer<uint8_t>((uint8_t *)p, buffer_size);
-
-	if (!thread.Start(ThreadFunc, this, error))
-		return nullptr;
-
-	return this;
+	thread.Start();
 }
 
-inline void
+void
 ThreadInputStream::ThreadFunc()
 {
 	FormatThreadName("input:%s", plugin);
 
-	Lock();
-	if (!Open(postponed_error)) {
+	const std::lock_guard<Mutex> lock(mutex);
+
+	try {
+		Open();
+	} catch (...) {
+		postponed_exception = std::current_exception();
 		cond.broadcast();
-		Unlock();
 		return;
 	}
 
@@ -79,23 +76,27 @@ ThreadInputStream::ThreadFunc()
 	SetReady();
 
 	while (!close) {
-		assert(!postponed_error.IsDefined());
+		assert(!postponed_exception);
 
 		auto w = buffer->Write();
 		if (w.IsEmpty()) {
 			wake_cond.wait(mutex);
 		} else {
-			Unlock();
+			size_t nbytes;
 
-			Error error;
-			size_t nbytes = ThreadRead(w.data, w.size, error);
+			try {
+				const ScopeUnlock unlock(mutex);
+				nbytes = ThreadRead(w.data, w.size);
+			} catch (...) {
+				postponed_exception = std::current_exception();
+				cond.broadcast();
+				break;
+			}
 
-			Lock();
 			cond.broadcast();
 
 			if (nbytes == 0) {
 				eof = true;
-				postponed_error = std::move(error);
 				break;
 			}
 
@@ -103,29 +104,16 @@ ThreadInputStream::ThreadFunc()
 		}
 	}
 
-	Unlock();
-
 	Close();
 }
 
 void
-ThreadInputStream::ThreadFunc(void *ctx)
-{
-	ThreadInputStream &tis = *(ThreadInputStream *)ctx;
-	tis.ThreadFunc();
-}
-
-bool
-ThreadInputStream::Check(Error &error)
+ThreadInputStream::Check()
 {
 	assert(!thread.IsInside());
 
-	if (postponed_error.IsDefined()) {
-		error = std::move(postponed_error);
-		return false;
-	}
-
-	return true;
+	if (postponed_exception)
+		std::rethrow_exception(postponed_exception);
 }
 
 bool
@@ -133,19 +121,17 @@ ThreadInputStream::IsAvailable()
 {
 	assert(!thread.IsInside());
 
-	return !buffer->IsEmpty() || eof || postponed_error.IsDefined();
+	return !buffer->IsEmpty() || eof || postponed_exception;
 }
 
 inline size_t
-ThreadInputStream::Read(void *ptr, size_t read_size, Error &error)
+ThreadInputStream::Read(void *ptr, size_t read_size)
 {
 	assert(!thread.IsInside());
 
 	while (true) {
-		if (postponed_error.IsDefined()) {
-			error = std::move(postponed_error);
-			return 0;
-		}
+		if (postponed_exception)
+			std::rethrow_exception(postponed_exception);
 
 		auto r = buffer->Read();
 		if (!r.IsEmpty()) {

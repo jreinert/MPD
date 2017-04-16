@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -43,13 +43,13 @@ public:
 	ProxyInputStream &operator=(const ProxyInputStream &) = delete;
 
 	/* virtual methods from InputStream */
-	bool Check(Error &error) override;
+	void Check() override;
 	void Update() override;
-	bool Seek(offset_type new_offset, Error &error) override;
+	void Seek(offset_type new_offset) override;
 	bool IsEOF() override;
 	Tag *ReadTag() override;
 	bool IsAvailable() override;
-	size_t Read(void *ptr, size_t read_size, Error &error) override;
+	size_t Read(void *ptr, size_t read_size) override;
 
 protected:
 	/**

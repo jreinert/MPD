@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -26,15 +26,16 @@ struct ConfigBlock;
 class EventLoop;
 class DatabaseListener;
 class Database;
-class Error;
 
 /**
  * Initialize the database library.
+ *
+ * Throws #std::runtime_error on error.
  *
  * @param block the database configuration block
  */
 Database *
 DatabaseGlobalInit(EventLoop &loop, DatabaseListener &listener,
-		   const ConfigBlock &block, Error &error);
+		   const ConfigBlock &block);
 
 #endif

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -25,14 +25,10 @@
 #include <exception>
 
 class Response;
-class Error;
 
 /**
- * Send the #Error to the client.
+ * Send the exception to the client.
  */
-CommandResult
-print_error(Response &r, const Error &error);
-
 void
 PrintError(Response &r, std::exception_ptr ep);
 

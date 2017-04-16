@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -24,13 +24,9 @@
 #include "storage/StorageInterface.hxx"
 #include "storage/FileInfo.hxx"
 #include "util/UriUtil.hxx"
-#include "util/Error.hxx"
 #include "fs/AllocatedPath.hxx"
-#include "fs/Traits.hxx"
 #include "fs/FileInfo.hxx"
-#include "decoder/DecoderList.hxx"
-#include "tag/Tag.hxx"
-#include "tag/TagBuilder.hxx"
+#include "tag/Builder.hxx"
 #include "TagFile.hxx"
 #include "TagStream.hxx"
 
@@ -38,9 +34,10 @@
 #include "TagArchive.hxx"
 #endif
 
+#include <stdexcept>
+
 #include <assert.h>
 #include <string.h>
-#include <sys/stat.h>
 
 #ifdef ENABLE_DATABASE
 
@@ -69,8 +66,11 @@ Song::UpdateFile(Storage &storage)
 	const auto &relative_uri = GetURI();
 
 	StorageFileInfo info;
-	if (!storage.GetInfo(relative_uri.c_str(), true, info, IgnoreError()))
+	try {
+		info = storage.GetInfo(relative_uri.c_str(), true);
+	} catch (const std::runtime_error &) {
 		return false;
+	}
 
 	if (!info.IsRegular())
 		return false;
@@ -88,7 +88,7 @@ Song::UpdateFile(Storage &storage)
 			return false;
 	}
 
-	mtime = info.mtime;
+	mtime = std::chrono::system_clock::to_time_t(info.mtime);
 	tag_builder.Commit(tag);
 	return true;
 }
@@ -151,7 +151,7 @@ DetachedSong::LoadFile(Path path)
 	if (!tag_file_scan(path, tag_builder))
 		return false;
 
-	mtime = fi.GetModificationTime();
+	mtime = std::chrono::system_clock::to_time_t(fi.GetModificationTime());
 	tag_builder.Commit(tag);
 	return true;
 }

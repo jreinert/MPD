@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2013-2015 Max Kellermann <max@duempel.org>
+ * Copyright (C) 2013-2015 Max Kellermann <max.kellermann@gmail.com>
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -47,7 +47,7 @@ struct StringView : ConstBuffer<char> {
 		:ConstBuffer<char>(_data,
 				   _data != nullptr ? strlen(_data) : 0) {}
 
-	StringView(std::nullptr_t n)
+	constexpr StringView(std::nullptr_t n)
 		:ConstBuffer<char>(n) {}
 
 	static constexpr StringView Empty() {
@@ -123,6 +123,11 @@ struct StringView : ConstBuffer<char> {
 	 * Skip all whitespace at the end.
 	 */
 	void StripRight();
+
+	void Strip() {
+		StripLeft();
+		StripRight();
+	}
 };
 
 #endif

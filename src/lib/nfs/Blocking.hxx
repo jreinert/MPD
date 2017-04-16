@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -25,7 +25,8 @@
 #include "Lease.hxx"
 #include "thread/Mutex.hxx"
 #include "thread/Cond.hxx"
-#include "util/Error.hxx"
+
+#include <exception>
 
 class NfsConnection;
 
@@ -35,14 +36,15 @@ class NfsConnection;
  * thread, and method Run() waits for completion.
  */
 class BlockingNfsOperation : protected NfsCallback, NfsLease {
-	static constexpr unsigned timeout_ms = 60000;
+	static constexpr std::chrono::steady_clock::duration timeout =
+		std::chrono::minutes(1);
 
 	Mutex mutex;
 	Cond cond;
 
 	bool finished;
 
-	Error error;
+	std::exception_ptr error;
 
 protected:
 	NfsConnection &connection;
@@ -51,13 +53,16 @@ public:
 	BlockingNfsOperation(NfsConnection &_connection)
 		:finished(false), connection(_connection) {}
 
-	bool Run(Error &error);
+	/**
+	 * Throws std::runtime_error on error.
+	 */
+	void Run();
 
 private:
 	bool LockWaitFinished() {
-		const ScopeLock protect(mutex);
+		const std::lock_guard<Mutex> protect(mutex);
 		while (!finished)
-			if (!cond.timed_wait(mutex, timeout_ms))
+			if (!cond.timed_wait(mutex, timeout))
 				return false;
 
 		return true;
@@ -68,22 +73,22 @@ private:
 	 * thread.
 	 */
 	void LockSetFinished() {
-		const ScopeLock protect(mutex);
+		const std::lock_guard<Mutex> protect(mutex);
 		finished = true;
 		cond.signal();
 	}
 
 	/* virtual methods from NfsLease */
 	void OnNfsConnectionReady() final;
-	void OnNfsConnectionFailed(const Error &error) final;
-	void OnNfsConnectionDisconnected(const Error &error) final;
+	void OnNfsConnectionFailed(std::exception_ptr e) final;
+	void OnNfsConnectionDisconnected(std::exception_ptr e) final;
 
 	/* virtual methods from NfsCallback */
 	void OnNfsCallback(unsigned status, void *data) final;
-	void OnNfsError(Error &&error) final;
+	void OnNfsError(std::exception_ptr &&e) final;
 
 protected:
-	virtual bool Start(Error &error) = 0;
+	virtual void Start() = 0;
 	virtual void HandleResult(unsigned status, void *data) = 0;
 };
 

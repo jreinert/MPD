@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -21,39 +21,34 @@
 #include "Interface.hxx"
 #include "LightSong.hxx"
 #include "tag/Set.hxx"
+#include "tag/Mask.hxx"
 
 #include <functional>
 
 #include <assert.h>
 
-static bool
-CollectTags(TagSet &set, TagType tag_type, tag_mask_t group_mask,
+static void
+CollectTags(TagSet &set, TagType tag_type, TagMask group_mask,
 	    const LightSong &song)
 {
 	assert(song.tag != nullptr);
 	const Tag &tag = *song.tag;
 
 	set.InsertUnique(tag, tag_type, group_mask);
-	return true;
 }
 
-bool
+void
 VisitUniqueTags(const Database &db, const DatabaseSelection &selection,
-		TagType tag_type, tag_mask_t group_mask,
-		VisitTag visit_tag,
-		Error &error)
+		TagType tag_type, TagMask group_mask,
+		VisitTag visit_tag)
 {
 	TagSet set;
 
 	using namespace std::placeholders;
 	const auto f = std::bind(CollectTags, std::ref(set),
 				 tag_type, group_mask, _1);
-	if (!db.Visit(selection, f, error))
-		return false;
+	db.Visit(selection, f);
 
 	for (const auto &value : set)
-		if (!visit_tag(value, error))
-			return false;
-
-	return true;
+		visit_tag(value);
 }

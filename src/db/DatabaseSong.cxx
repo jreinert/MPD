@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -23,33 +23,31 @@
 #include "Interface.hxx"
 #include "DetachedSong.hxx"
 #include "storage/StorageInterface.hxx"
+#include "util/ScopeExit.hxx"
 
 #include <assert.h>
 
 DetachedSong
-DatabaseDetachSong(const Storage &storage, const LightSong &song)
+DatabaseDetachSong(const Storage *storage, const LightSong &song)
 {
 	DetachedSong detached(song);
 	assert(detached.IsInDatabase());
 
-	if (!detached.HasRealURI()) {
+	if (!detached.HasRealURI() && storage != nullptr) {
 		const auto uri = song.GetURI();
-		detached.SetRealURI(storage.MapUTF8(uri.c_str()));
+		detached.SetRealURI(storage->MapUTF8(uri.c_str()));
 	}
 
 	return detached;
 }
 
-DetachedSong *
-DatabaseDetachSong(const Database &db, const Storage &storage, const char *uri,
-		   Error &error)
+DetachedSong
+DatabaseDetachSong(const Database &db, const Storage *storage, const char *uri)
 {
-	const LightSong *tmp = db.GetSong(uri, error);
-	if (tmp == nullptr)
-		return nullptr;
+	const LightSong *tmp = db.GetSong(uri);
+	assert(tmp != nullptr);
 
-	DetachedSong *song = new DetachedSong(DatabaseDetachSong(storage,
-								 *tmp));
-	db.ReturnSong(tmp);
-	return song;
+	AtScopeExit(&db, tmp) { db.ReturnSong(tmp); };
+
+	return DatabaseDetachSong(storage, *tmp);
 }

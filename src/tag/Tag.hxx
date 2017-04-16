@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -20,15 +20,12 @@
 #ifndef MPD_TAG_HXX
 #define MPD_TAG_HXX
 
-#include "TagType.h" // IWYU pragma: export
-#include "TagItem.hxx" // IWYU pragma: export
+#include "Type.h" // IWYU pragma: export
+#include "Item.hxx" // IWYU pragma: export
 #include "Chrono.hxx"
 #include "Compiler.h"
 
 #include <algorithm>
-#include <iterator>
-
-#include <stddef.h>
 
 /**
  * The meta information about a song file.  It is a MPD specific
@@ -145,6 +142,15 @@ struct Tag {
 	gcc_pure
 	bool HasType(TagType type) const;
 
+	/**
+	 * Returns a value for sorting on the specified type, with
+	 * automatic fallbacks to the next best tag type
+	 * (e.g. #TAG_ALBUM_ARTIST falls back to #TAG_ARTIST).  If
+	 * there is no such value, returns an empty string.
+	 */
+	gcc_pure
+	const char *GetSortValue(TagType type) const;
+
 	class const_iterator {
 		friend struct Tag;
 		const TagItem *const*cursor;
@@ -198,23 +204,5 @@ struct Tag {
 		return const_iterator{items + num_items};
 	}
 };
-
-/**
- * Parse the string, and convert it into a #TagType.  Returns
- * #TAG_NUM_OF_ITEM_TYPES if the string could not be recognized.
- */
-gcc_pure
-TagType
-tag_name_parse(const char *name);
-
-/**
- * Parse the string, and convert it into a #TagType.  Returns
- * #TAG_NUM_OF_ITEM_TYPES if the string could not be recognized.
- *
- * Case does not matter.
- */
-gcc_pure
-TagType
-tag_name_parse_i(const char *name);
 
 #endif

@@ -116,7 +116,7 @@
 #
 # This setting defines a list of tag types that will be extracted during the
 # audio file discovery process. The complete list of possible values can be
-# found in the mpd.conf man page.
+# found in the user manual.
 #metadata_to_use	"artist,album,title,track,name,genre,date,composer,performer,disc"
 #
 # This setting enables automatic update of MPD's database when files in 
@@ -165,7 +165,7 @@
 # Permissions #################################################################
 #
 # If this setting is set, MPD will require password authorization. The password
-# can setting can be specified multiple times for different password profiles.
+# setting can be specified multiple times for different password profiles.
 #
 #password                        "password@read,add,control,admin"
 #
@@ -232,7 +232,7 @@ input {
 #
 #audio_output {
 #	type		"shout"
-#	encoding	"ogg"			# optional
+#	encoder		"vorbis"		# optional
 #	name		"My Shout Stream"
 #	host		"localhost"
 #	port		"8000"
@@ -303,6 +303,23 @@ input {
 #	type		"openal"
 #	name		"My OpenAL output"
 ##	device		"Digital Audio (S/PDIF) (High Definition Audio Device)" # optional
+#}
+#
+# An example of an sndio output.
+#
+#audio_output {
+#	type		"sndio"
+#	name		"sndio output"
+#	mixer_type	"software"
+#}
+#
+# An example of an OS X output:
+#
+#audio_output {
+#	type		"osx"
+#	name		"My OS X Device"
+##	device		"Built-in Output"	# optional
+##	channel_map      "-1,-1,0,1"	# optional
 #}
 #
 ## Example "pipe" output:

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -25,15 +25,15 @@
 class EventLoop;
 class DatabaseListener;
 class Database;
-class Error;
 
 /**
  * Read database configuration settings and create a #Database
- * instance from it, but do not open it.  Returns nullptr on error or
- * if no database is configured (no #Error set in that case).
+ * instance from it, but do not open it.  Returns nullptr if no
+ * database is configured.
+ *
+ * Throws #std::runtime_error on error.
  */
 Database *
-CreateConfiguredDatabase(EventLoop &loop, DatabaseListener &listener,
-			 Error &error);
+CreateConfiguredDatabase(EventLoop &loop, DatabaseListener &listener);
 
 #endif

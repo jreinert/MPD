@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -28,9 +28,6 @@
 #include <string>
 #include <map>
 
-class Error;
-class Storage;
-
 /**
  * A #Storage implementation that combines multiple other #Storage
  * instances in one virtual tree.  It is used to "mount" new #Storage
@@ -45,7 +42,7 @@ class CompositeStorage final : public Storage {
 	 */
 	struct Directory {
 		/**
-		 * The #Storage mounted n this virtual directory.  All
+		 * The #Storage mounted in this virtual directory.  All
 		 * "leaf" Directory instances must have a #Storage.
 		 * Other Directory instances may have one, and child
 		 * mounts will be "mixed" in.
@@ -113,7 +110,7 @@ public:
 	 */
 	template<typename T>
 	void VisitMounts(T t) const {
-		const ScopeLock protect(mutex);
+		const std::lock_guard<Mutex> protect(mutex);
 		std::string uri;
 		VisitMounts(uri, root, t);
 	}
@@ -122,11 +119,9 @@ public:
 	bool Unmount(const char *uri);
 
 	/* virtual methods from class Storage */
-	bool GetInfo(const char *uri, bool follow, StorageFileInfo &info,
-		     Error &error) override;
+	StorageFileInfo GetInfo(const char *uri, bool follow) override;
 
-	StorageDirectoryReader *OpenDirectory(const char *uri,
-					      Error &error) override;
+	StorageDirectoryReader *OpenDirectory(const char *uri) override;
 
 	std::string MapUTF8(const char *uri) const override;
 
@@ -155,9 +150,16 @@ private:
 		}
 	}
 
+	/**
+	 * Follow the given URI path, and find the outermost directory
+	 * which is a #Storage mount point.  If there are no mounts,
+	 * it returns the root directory (with a nullptr "storage"
+	 * attribute, of course).  FindResult::uri contains the
+	 * remaining unused part of the URI (may be empty if all of
+	 * the URI was used).
+	 */
 	gcc_pure
 	FindResult FindStorage(const char *uri) const;
-	FindResult FindStorage(const char *uri, Error &error) const;
 
 	const char *MapToRelativeUTF8(const Directory &directory,
 				      const char *uri) const;

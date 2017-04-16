@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -32,7 +32,6 @@
 #include "fs/Traits.hxx"
 #include "util/Alloc.hxx"
 #include "util/DeleteDisposer.hxx"
-#include "util/Error.hxx"
 
 #include <assert.h>
 #include <string.h>
@@ -40,10 +39,7 @@
 
 Directory::Directory(std::string &&_path_utf8, Directory *_parent)
 	:parent(_parent),
-	 mtime(0),
-	 inode(0), device(0),
-	 path(std::move(_path_utf8)),
-	 mounted_database(nullptr)
+	 path(std::move(_path_utf8))
 {
 }
 
@@ -218,14 +214,11 @@ Directory::Sort()
 		child.Sort();
 }
 
-bool
+void
 Directory::Walk(bool recursive, const SongFilter *filter,
 		VisitDirectory visit_directory, VisitSong visit_song,
-		VisitPlaylist visit_playlist,
-		Error &error) const
+		VisitPlaylist visit_playlist) const
 {
-	assert(!error.IsDefined());
-
 	if (IsMount()) {
 		assert(IsEmpty());
 
@@ -233,41 +226,35 @@ Directory::Walk(bool recursive, const SongFilter *filter,
 		   because the child's SimpleDatabasePlugin::Visit()
 		   call will lock it again */
 		const ScopeDatabaseUnlock unlock;
-		return WalkMount(GetPath(), *mounted_database,
-				 recursive, filter,
-				 visit_directory, visit_song,
-				 visit_playlist,
-				 error);
+		WalkMount(GetPath(), *mounted_database,
+			  recursive, filter,
+			  visit_directory, visit_song,
+			  visit_playlist);
+		return;
 	}
 
 	if (visit_song) {
 		for (auto &song : songs){
 			const LightSong song2 = song.Export();
-			if ((filter == nullptr || filter->Match(song2)) &&
-			    !visit_song(song2, error))
-				return false;
+			if (filter == nullptr || filter->Match(song2))
+				visit_song(song2);
 		}
 	}
 
 	if (visit_playlist) {
 		for (const PlaylistInfo &p : playlists)
-			if (!visit_playlist(p, Export(), error))
-				return false;
+			visit_playlist(p, Export());
 	}
 
 	for (auto &child : children) {
-		if (visit_directory &&
-		    !visit_directory(child.Export(), error))
-			return false;
+		if (visit_directory)
+			visit_directory(child.Export());
 
-		if (recursive &&
-		    !child.Walk(recursive, filter,
-				visit_directory, visit_song, visit_playlist,
-				error))
-			return false;
+		if (recursive)
+			child.Walk(recursive, filter,
+				   visit_directory, visit_song,
+				   visit_playlist);
 	}
-
-	return true;
 }
 
 LightDirectory

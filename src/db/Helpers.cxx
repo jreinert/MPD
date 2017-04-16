@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -67,21 +67,19 @@ StatsVisitTag(DatabaseStats &stats, StringSet &artists, StringSet &albums,
 	}
 }
 
-static bool
+static void
 StatsVisitSong(DatabaseStats &stats, StringSet &artists, StringSet &albums,
 	       const LightSong &song)
 {
 	++stats.song_count;
 
 	StatsVisitTag(stats, artists, albums, *song.tag);
-
-	return true;
 }
 
-bool
-GetStats(const Database &db, const DatabaseSelection &selection,
-	 DatabaseStats &stats, Error &error)
+DatabaseStats
+GetStats(const Database &db, const DatabaseSelection &selection)
 {
+	DatabaseStats stats;
 	stats.Clear();
 
 	StringSet artists, albums;
@@ -89,10 +87,9 @@ GetStats(const Database &db, const DatabaseSelection &selection,
 	const auto f = std::bind(StatsVisitSong,
 				 std::ref(stats), std::ref(artists),
 				 std::ref(albums), _1);
-	if (!db.Visit(selection, f, error))
-		return false;
+	db.Visit(selection, f);
 
 	stats.artist_count = artists.size();
 	stats.album_count = albums.size();
-	return true;
+	return stats;
 }

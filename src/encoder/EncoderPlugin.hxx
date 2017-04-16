@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -20,58 +20,29 @@
 #ifndef MPD_ENCODER_PLUGIN_HXX
 #define MPD_ENCODER_PLUGIN_HXX
 
-#include <stddef.h>
-
-struct Encoder;
-struct AudioFormat;
+class PreparedEncoder;
 struct ConfigBlock;
-struct Tag;
-class Error;
 
 struct EncoderPlugin {
 	const char *name;
 
-	Encoder *(*init)(const ConfigBlock &block,
-			 Error &error);
-
-	void (*finish)(Encoder *encoder);
-
-	bool (*open)(Encoder *encoder,
-		     AudioFormat &audio_format,
-		     Error &error);
-
-	void (*close)(Encoder *encoder);
-
-	bool (*end)(Encoder *encoder, Error &error);
-
-	bool (*flush)(Encoder *encoder, Error &error);
-
-	bool (*pre_tag)(Encoder *encoder, Error &error);
-
-	bool (*tag)(Encoder *encoder, const Tag &tag,
-		    Error &error);
-
-	bool (*write)(Encoder *encoder,
-		      const void *data, size_t length,
-		      Error &error);
-
-	size_t (*read)(Encoder *encoder, void *dest, size_t length);
-
-	const char *(*get_mime_type)(Encoder *encoder);
+	/**
+	 * Throws #std::runtime_error on error.
+	 */
+	PreparedEncoder *(*init)(const ConfigBlock &block);
 };
 
 /**
  * Creates a new encoder object.
  *
+ * Throws #std::runtime_error on error.
+ *
  * @param plugin the encoder plugin
- * @param error location to store the error occurring, or nullptr to ignore errors.
- * @return an encoder object on success, nullptr on failure
  */
-static inline Encoder *
-encoder_init(const EncoderPlugin &plugin, const ConfigBlock &block,
-	     Error &error)
+static inline PreparedEncoder *
+encoder_init(const EncoderPlugin &plugin, const ConfigBlock &block)
 {
-	return plugin.init(block, error);
+	return plugin.init(block);
 }
 
 #endif

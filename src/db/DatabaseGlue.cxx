@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -21,25 +21,26 @@
 #include "DatabaseGlue.hxx"
 #include "Registry.hxx"
 #include "DatabaseError.hxx"
-#include "util/Error.hxx"
+#include "util/RuntimeError.hxx"
 #include "config/Block.hxx"
 #include "DatabasePlugin.hxx"
 
-#include <string.h>
-
 Database *
 DatabaseGlobalInit(EventLoop &loop, DatabaseListener &listener,
-		   const ConfigBlock &block, Error &error)
+		   const ConfigBlock &block)
 {
 	const char *plugin_name =
 		block.GetBlockValue("plugin", "simple");
 
 	const DatabasePlugin *plugin = GetDatabasePluginByName(plugin_name);
-	if (plugin == nullptr) {
-		error.Format(db_domain,
-			     "No such database plugin: %s", plugin_name);
-		return nullptr;
-	}
+	if (plugin == nullptr)
+		throw FormatRuntimeError("No such database plugin: %s",
+					 plugin_name);
 
-	return plugin->create(loop, listener, block, error);
+	try {
+		return plugin->create(loop, listener, block);
+	} catch (...) {
+		std::throw_with_nested(FormatRuntimeError("Failed to initialize database plugin '%s'",
+							  plugin_name));
+	}
 }

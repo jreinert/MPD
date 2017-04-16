@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -27,12 +27,12 @@
 #ifndef MPD_FILTER_CHAIN_HXX
 #define MPD_FILTER_CHAIN_HXX
 
-class Filter;
+class PreparedFilter;
 
 /**
  * Creates a new filter chain.
  */
-Filter *
+PreparedFilter *
 filter_chain_new();
 
 /**
@@ -43,6 +43,7 @@ filter_chain_new();
  * @param filter the filter to be appended to #chain
  */
 void
-filter_chain_append(Filter &chain, const char *name, Filter *filter);
+filter_chain_append(PreparedFilter &chain, const char *name,
+		    PreparedFilter *filter);
 
 #endif

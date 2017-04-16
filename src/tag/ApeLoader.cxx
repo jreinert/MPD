@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -22,9 +22,9 @@
 #include "system/ByteOrder.hxx"
 #include "input/InputStream.hxx"
 #include "util/StringView.hxx"
-#include "util/Error.hxx"
 
 #include <memory>
+#include <stdexcept>
 
 #include <stdint.h>
 #include <assert.h>
@@ -41,17 +41,18 @@ struct ApeFooter {
 
 bool
 tag_ape_scan(InputStream &is, ApeTagCallback callback)
-{
-	const ScopeLock protect(is.mutex);
+try {
+	const std::lock_guard<Mutex> protect(is.mutex);
 
 	if (!is.KnownSize() || !is.CheapSeeking())
 		return false;
 
 	/* determine if file has an apeV2 tag */
 	ApeFooter footer;
-	if (!is.Seek(is.GetSize() - sizeof(footer), IgnoreError()) ||
-	    !is.ReadFull(&footer, sizeof(footer), IgnoreError()) ||
-	    memcmp(footer.id, "APETAGEX", sizeof(footer.id)) != 0 ||
+	is.Seek(is.GetSize() - sizeof(footer));
+	is.ReadFull(&footer, sizeof(footer));
+
+	if (memcmp(footer.id, "APETAGEX", sizeof(footer.id)) != 0 ||
 	    FromLE32(footer.version) != 2000)
 		return false;
 
@@ -59,17 +60,17 @@ tag_ape_scan(InputStream &is, ApeTagCallback callback)
 	size_t remaining = FromLE32(footer.length);
 	if (remaining <= sizeof(footer) + 10 ||
 	    /* refuse to load more than one megabyte of tag data */
-	    remaining > 1024 * 1024 ||
-	    !is.Seek(is.GetSize() - remaining, IgnoreError()))
+	    remaining > 1024 * 1024)
 		return false;
+
+	is.Seek(is.GetSize() - remaining);
 
 	/* read tag into buffer */
 	remaining -= sizeof(footer);
 	assert(remaining > 10);
 
 	std::unique_ptr<char[]> buffer(new char[remaining]);
-	if (!is.ReadFull(buffer.get(), remaining, IgnoreError()))
-		return false;
+	is.ReadFull(buffer.get(), remaining);
 
 	/* read tags */
 	unsigned n = FromLE32(footer.count);
@@ -103,4 +104,6 @@ tag_ape_scan(InputStream &is, ApeTagCallback callback)
 	}
 
 	return true;
+} catch (const std::runtime_error &) {
+		return false;
 }

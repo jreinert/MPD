@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -20,9 +20,10 @@
 #include "config.h"
 #include "TextInputStream.hxx"
 #include "InputStream.hxx"
-#include "util/Error.hxx"
 #include "util/TextFile.hxx"
 #include "Log.hxx"
+
+#include <stdexcept>
 
 #include <assert.h>
 
@@ -58,14 +59,16 @@ TextInputStream::ReadLine()
 		   character */
 		--dest.size;
 
-		Error error;
-		size_t nbytes = is->LockRead(dest.data, dest.size, error);
-		if (nbytes > 0)
-			buffer.Append(nbytes);
-		else if (error.IsDefined()) {
-			LogError(error);
+		size_t nbytes;
+
+		try {
+			nbytes = is->LockRead(dest.data, dest.size);
+		} catch (const std::runtime_error &e) {
+			LogError(e);
 			return nullptr;
 		}
+
+		buffer.Append(nbytes);
 
 		line = ReadBufferedLine(buffer);
 		if (line != nullptr)

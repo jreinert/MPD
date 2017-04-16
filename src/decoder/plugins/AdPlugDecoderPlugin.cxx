@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -19,11 +19,10 @@
 
 #include "config.h"
 #include "AdPlugDecoderPlugin.h"
-#include "tag/TagHandler.hxx"
+#include "tag/Handler.hxx"
 #include "../DecoderAPI.hxx"
 #include "CheckAudioFormat.hxx"
 #include "fs/Path.hxx"
-#include "util/Error.hxx"
 #include "util/Domain.hxx"
 #include "util/Macros.hxx"
 #include "Log.hxx"
@@ -43,19 +42,14 @@ adplug_init(const ConfigBlock &block)
 	FormatDebug(adplug_domain, "adplug %s",
 		    CAdPlug::get_version().c_str());
 
-	Error error;
-
 	sample_rate = block.GetBlockValue("sample_rate", 48000u);
-	if (!audio_check_sample_rate(sample_rate, error)) {
-		LogError(error);
-		return false;
-	}
+	CheckSampleRate(sample_rate);
 
 	return true;
 }
 
 static void
-adplug_file_decode(Decoder &decoder, Path path_fs)
+adplug_file_decode(DecoderClient &client, Path path_fs)
 {
 	CEmuopl opl(sample_rate, true, true);
 	opl.init();
@@ -67,8 +61,8 @@ adplug_file_decode(Decoder &decoder, Path path_fs)
 	const AudioFormat audio_format(sample_rate, SampleFormat::S16, 2);
 	assert(audio_format.IsValid());
 
-	decoder_initialized(decoder, audio_format, false,
-			    SongTime::FromMS(player->songlength()));
+	client.Ready(audio_format, false,
+		     SongTime::FromMS(player->songlength()));
 
 	DecoderCommand cmd;
 
@@ -79,9 +73,9 @@ adplug_file_decode(Decoder &decoder, Path path_fs)
 		int16_t buffer[2048];
 		constexpr unsigned frames_per_buffer = ARRAY_SIZE(buffer) / 2;
 		opl.update(buffer, frames_per_buffer);
-		cmd = decoder_data(decoder, nullptr,
-				   buffer, sizeof(buffer),
-				   0);
+		cmd = client.SubmitData(nullptr,
+					buffer, sizeof(buffer),
+					0);
 	} while (cmd == DecoderCommand::NONE);
 
 	delete player;

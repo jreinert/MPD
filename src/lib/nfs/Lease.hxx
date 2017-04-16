@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -22,7 +22,7 @@
 
 #include "check.h"
 
-class Error;
+#include <exception>
 
 class NfsLease {
 public:
@@ -36,13 +36,13 @@ public:
 	 * The #NfsConnection has failed to mount the server's export.
 	 * This is being called instead of OnNfsConnectionReady().
 	 */
-	virtual void OnNfsConnectionFailed(const Error &error) = 0;
+	virtual void OnNfsConnectionFailed(std::exception_ptr e) = 0;
 
 	/**
 	 * The #NfsConnection has failed after OnNfsConnectionReady()
 	 * had been called already.
 	 */
-	virtual void OnNfsConnectionDisconnected(const Error &error) = 0;
+	virtual void OnNfsConnectionDisconnected(std::exception_ptr e) = 0;
 };
 
 #endif

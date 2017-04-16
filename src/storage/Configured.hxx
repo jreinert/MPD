@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -23,17 +23,17 @@
 #include "check.h"
 #include "Compiler.h"
 
-class Error;
 class Storage;
 class EventLoop;
 
 /**
  * Read storage configuration settings and create a #Storage instance
- * from it.  Returns nullptr on error or if no storage is configured
- * (no #Error set in that case).
+ * from it.  Returns nullptr if no storage is configured.
+ *
+ * Throws #std::runtime_error on error.
  */
 Storage *
-CreateConfiguredStorage(EventLoop &event_loop, Error &error);
+CreateConfiguredStorage(EventLoop &event_loop);
 
 /**
  * Returns true if there is configuration for a #Storage instance.

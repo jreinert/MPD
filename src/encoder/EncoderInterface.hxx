@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -21,32 +21,97 @@
 #define MPD_ENCODER_INTERFACE_HXX
 
 #include "EncoderPlugin.hxx"
+#include "Compiler.h"
 
 #include <assert.h>
+#include <stddef.h>
 
-struct Encoder {
-	const EncoderPlugin &plugin;
+struct AudioFormat;
+struct Tag;
 
-#ifndef NDEBUG
-	bool open, pre_tag, tag, end;
-#endif
+class Encoder {
+	const bool implements_tag;
 
-	explicit Encoder(const EncoderPlugin &_plugin)
-		:plugin(_plugin)
-#ifndef NDEBUG
-		, open(false)
-#endif
-	{}
+public:
+	explicit Encoder(bool _implements_tag)
+		:implements_tag(_implements_tag) {}
+	virtual ~Encoder() {}
 
+	bool ImplementsTag() const {
+		return implements_tag;
+	}
 
 	/**
-	 * Frees an #Encoder object.
+	 * Ends the stream: flushes the encoder object, generate an
+	 * end-of-stream marker (if applicable), make everything which
+	 * might currently be buffered available by encoder_read().
+	 *
+	 * After this function has been called, the encoder may not be
+	 * usable for more data, and only Read() and Close() can be
+	 * called.
+	 *
+	 * Throws #std::runtime_error on error.
 	 */
-	void Dispose() {
-		assert(!open);
-
-		plugin.finish(this);
+	virtual void End() {
 	}
+
+	/**
+	 * Flushes an encoder object, make everything which might
+	 * currently be buffered available by Read().
+	 *
+	 * Throws #std::runtime_error on error.
+	 */
+	virtual void Flush() {
+	}
+
+	/**
+	 * Prepare for sending a tag to the encoder.  This is used by
+	 * some encoders to flush the previous sub-stream, in
+	 * preparation to begin a new one.
+	 *
+	 * Throws #std::runtime_error on error.
+	 */
+	virtual void PreTag() {
+	}
+
+	/**
+	 * Sends a tag to the encoder.
+	 *
+	 * Instructions: call PreTag(); then obtain flushed data with
+	 * Read(); finally call Tag().
+	 *
+	 * Throws #std::runtime_error on error.
+	 *
+	 * @param tag the tag object
+	 */
+	virtual void SendTag(gcc_unused const Tag &tag) {
+	}
+
+	/**
+	 * Writes raw PCM data to the encoder.
+	 *
+	 * Throws #std::runtime_error on error.
+	 *
+	 * @param data the buffer containing PCM samples
+	 * @param length the length of the buffer in bytes
+	 */
+	virtual void Write(const void *data, size_t length) = 0;
+
+	/**
+	 * Reads encoded data from the encoder.
+	 *
+	 * Call this repeatedly until no more data is returned.
+	 *
+	 * @param dest the destination buffer to copy to
+	 * @param length the maximum length of the destination buffer
+	 * @return the number of bytes written to #dest
+	 */
+	virtual size_t Read(void *dest, size_t length) = 0;
+};
+
+class PreparedEncoder {
+public:
+	virtual ~PreparedEncoder() {}
 
 	/**
 	 * Opens the object.  You must call this prior to using it.
@@ -57,200 +122,21 @@ struct Encoder {
 	 * first encoder_write() call, you should invoke
 	 * encoder_read() to obtain the file header.
 	 *
+	 * Throws #std::runtime_error on error.
+	 *
 	 * @param audio_format the encoder's input audio format; the plugin
 	 * may modify the struct to adapt it to its abilities
-	 * @return true on success
 	 */
-	bool Open(AudioFormat &audio_format, Error &error) {
-		assert(!open);
-
-		bool success = plugin.open(this, audio_format, error);
-#ifndef NDEBUG
-		open = success;
-		pre_tag = tag = end = false;
-#endif
-		return success;
-	}
-
+	virtual Encoder *Open(AudioFormat &audio_format) = 0;
 
 	/**
-	 * Closes the object.  This disables the encoder, and readies
-	 * it for reusal by calling Open() again.
+	 * Get mime type of encoded content.
+	 *
+	 * @return an constant string, nullptr on failure
 	 */
-	void Close() {
-		assert(open);
-
-		if (plugin.close != nullptr)
-			plugin.close(this);
-
-#ifndef NDEBUG
-		open = false;
-#endif
+	virtual const char *GetMimeType() const {
+		return nullptr;
 	}
 };
-
-/**
- * Ends the stream: flushes the encoder object, generate an
- * end-of-stream marker (if applicable), make everything which might
- * currently be buffered available by encoder_read().
- *
- * After this function has been called, the encoder may not be usable
- * for more data, and only encoder_read() and Encoder::Close() can be
- * called.
- *
- * @param encoder the encoder
- * @return true on success
- */
-static inline bool
-encoder_end(Encoder *encoder, Error &error)
-{
-	assert(encoder->open);
-	assert(!encoder->end);
-
-#ifndef NDEBUG
-	encoder->end = true;
-#endif
-
-	/* this method is optional */
-	return encoder->plugin.end != nullptr
-		? encoder->plugin.end(encoder, error)
-		: true;
-}
-
-/**
- * Flushes an encoder object, make everything which might currently be
- * buffered available by encoder_read().
- *
- * @param encoder the encoder
- * @return true on success
- */
-static inline bool
-encoder_flush(Encoder *encoder, Error &error)
-{
-	assert(encoder->open);
-	assert(!encoder->pre_tag);
-	assert(!encoder->tag);
-	assert(!encoder->end);
-
-	/* this method is optional */
-	return encoder->plugin.flush != nullptr
-		? encoder->plugin.flush(encoder, error)
-		: true;
-}
-
-/**
- * Prepare for sending a tag to the encoder.  This is used by some
- * encoders to flush the previous sub-stream, in preparation to begin
- * a new one.
- *
- * @param encoder the encoder
- * @return true on success
- */
-static inline bool
-encoder_pre_tag(Encoder *encoder, Error &error)
-{
-	assert(encoder->open);
-	assert(!encoder->pre_tag);
-	assert(!encoder->tag);
-	assert(!encoder->end);
-
-	/* this method is optional */
-	bool success = encoder->plugin.pre_tag != nullptr
-		? encoder->plugin.pre_tag(encoder, error)
-		: true;
-
-#ifndef NDEBUG
-	encoder->pre_tag = success;
-#endif
-	return success;
-}
-
-/**
- * Sends a tag to the encoder.
- *
- * Instructions: call encoder_pre_tag(); then obtain flushed data with
- * encoder_read(); finally call encoder_tag().
- *
- * @param encoder the encoder
- * @param tag the tag object
- * @return true on success
- */
-static inline bool
-encoder_tag(Encoder *encoder, const Tag &tag, Error &error)
-{
-	assert(encoder->open);
-	assert(!encoder->pre_tag);
-	assert(encoder->tag);
-	assert(!encoder->end);
-
-#ifndef NDEBUG
-	encoder->tag = false;
-#endif
-
-	/* this method is optional */
-	return encoder->plugin.tag != nullptr
-		? encoder->plugin.tag(encoder, tag, error)
-		: true;
-}
-
-/**
- * Writes raw PCM data to the encoder.
- *
- * @param encoder the encoder
- * @param data the buffer containing PCM samples
- * @param length the length of the buffer in bytes
- * @return true on success
- */
-static inline bool
-encoder_write(Encoder *encoder, const void *data, size_t length,
-	      Error &error)
-{
-	assert(encoder->open);
-	assert(!encoder->pre_tag);
-	assert(!encoder->tag);
-	assert(!encoder->end);
-
-	return encoder->plugin.write(encoder, data, length, error);
-}
-
-/**
- * Reads encoded data from the encoder.
- *
- * Call this repeatedly until no more data is returned.
- *
- * @param encoder the encoder
- * @param dest the destination buffer to copy to
- * @param length the maximum length of the destination buffer
- * @return the number of bytes written to #dest
- */
-static inline size_t
-encoder_read(Encoder *encoder, void *dest, size_t length)
-{
-	assert(encoder->open);
-	assert(!encoder->pre_tag || !encoder->tag);
-
-#ifndef NDEBUG
-	if (encoder->pre_tag) {
-		encoder->pre_tag = false;
-		encoder->tag = true;
-	}
-#endif
-
-	return encoder->plugin.read(encoder, dest, length);
-}
-
-/**
- * Get mime type of encoded content.
- *
- * @return an constant string, nullptr on failure
- */
-static inline const char *
-encoder_get_mime_type(Encoder *encoder)
-{
-	/* this method is optional */
-	return encoder->plugin.get_mime_type != nullptr
-		? encoder->plugin.get_mime_type(encoder)
-		: nullptr;
-}
 
 #endif

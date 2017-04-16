@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -26,8 +26,6 @@
 
 #include <forward_list>
 
-struct config_param;
-class Error;
 class EventLoop;
 class NeighborExplorer;
 class NeighborListener;
@@ -60,9 +58,12 @@ public:
 		return explorers.empty();
 	}
 
-	bool Init(EventLoop &loop, NeighborListener &listener, Error &error);
+	/**
+	 * Throws std::runtime_error on error.
+	 */
+	void Init(EventLoop &loop, NeighborListener &listener);
 
-	bool Open(Error &error);
+	void Open();
 	void Close();
 
 	/**

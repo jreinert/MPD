@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -19,24 +19,21 @@
 
 #include "config.h"
 #include "Init.hxx"
-#include "Error.hxx"
 #include "Collate.hxx"
-#include "util/Error.hxx"
+#include "util/RuntimeError.hxx"
 
 #include <unicode/uclean.h>
 
-bool
-IcuInit(Error &error)
+void
+IcuInit()
 {
 	UErrorCode code = U_ZERO_ERROR;
 	u_init(&code);
-	if (U_FAILURE(code)) {
-		error.Format(icu_domain, int(code),
-			     "u_init() failed: %s", u_errorName(code));
-		return false;
-	}
+	if (U_FAILURE(code))
+		throw FormatRuntimeError("u_init() failed: %s",
+					 u_errorName(code));
 
-	return IcuCollateInit(error);
+	IcuCollateInit();
 }
 
 void

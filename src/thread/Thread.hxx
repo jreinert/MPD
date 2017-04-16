@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -21,6 +21,7 @@
 #define MPD_THREAD_HXX
 
 #include "check.h"
+#include "util/BindMethod.hxx"
 #include "Compiler.h"
 
 #ifdef WIN32
@@ -31,15 +32,16 @@
 
 #include <assert.h>
 
-class Error;
-
 class Thread {
+	typedef BoundMethod<void()> Function;
+	const Function f;
+
 #ifdef WIN32
-	HANDLE handle;
+	HANDLE handle = nullptr;
 	DWORD id;
 #else
 	pthread_t handle;
-	bool defined;
+	bool defined = false;
 
 #ifndef NDEBUG
 	/**
@@ -47,23 +49,12 @@ class Thread {
 	 * IsInside(), which may return false until pthread_create() has
 	 * initialised the #handle.
 	 */
-	bool creating;
+	bool creating = false;
 #endif
 #endif
-
-	void (*f)(void *ctx);
-	void *ctx;
 
 public:
-#ifdef WIN32
-	Thread():handle(nullptr) {}
-#else
-	Thread():defined(false) {
-#ifndef NDEBUG
-		creating = false;
-#endif
-	}
-#endif
+	explicit Thread(Function _f):f(_f) {}
 
 	Thread(const Thread &) = delete;
 
@@ -99,10 +90,12 @@ public:
 #endif
 	}
 
-	bool Start(void (*f)(void *ctx), void *ctx, Error &error);
+	void Start();
 	void Join();
 
 private:
+	void Run();
+
 #ifdef WIN32
 	static DWORD WINAPI ThreadProc(LPVOID ctx);
 #else

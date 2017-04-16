@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -30,7 +30,6 @@ class Database;
 class Storage;
 class DetachedSong;
 class Path;
-class Error;
 struct LocatedUri;
 
 /**
@@ -68,18 +67,20 @@ public:
 	}
 #endif
 
-	DetachedSong *LoadSong(const LocatedUri &uri, Error &error) const;
+	DetachedSong LoadSong(const LocatedUri &uri) const;
 
+	/**
+	 * Throws #std::runtime_error on error.
+	 */
 	gcc_nonnull_all
-	DetachedSong *LoadSong(const char *uri_utf8, Error &error) const;
+	DetachedSong LoadSong(const char *uri_utf8) const;
 
 private:
 	gcc_nonnull_all
-	DetachedSong *LoadFromDatabase(const char *uri, Error &error) const;
+	DetachedSong LoadFromDatabase(const char *uri) const;
 
 	gcc_nonnull_all
-	DetachedSong *LoadFile(const char *path_utf8, Path path_fs,
-			       Error &error) const;
+	DetachedSong LoadFile(const char *path_utf8, Path path_fs) const;
 };
 
 #endif

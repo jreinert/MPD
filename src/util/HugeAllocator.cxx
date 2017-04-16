@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2013 Max Kellermann <max@duempel.org>
+ * Copyright (C) 2013-2017 Max Kellermann <max.kellermann@gmail.com>
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -29,6 +29,8 @@
 
 #include "HugeAllocator.hxx"
 
+#include <new>
+
 #ifdef __linux__
 #include <sys/mman.h>
 #include <unistd.h>
@@ -46,7 +48,7 @@ static size_t
 AlignToPageSize(size_t size)
 {
 	static const long page_size = sysconf(_SC_PAGESIZE);
-	if (page_size > 0)
+	if (page_size <= 0)
 		return size;
 
 	size_t ps(page_size);
@@ -63,7 +65,7 @@ HugeAllocate(size_t size)
 		       PROT_READ|PROT_WRITE, flags,
 		       -1, 0);
 	if (p == (void *)-1)
-		return nullptr;
+		throw std::bad_alloc();
 
 #ifdef MADV_HUGEPAGE
 	/* allow the Linux kernel to use "Huge Pages", which reduces page
@@ -81,17 +83,32 @@ HugeAllocate(size_t size)
 }
 
 void
-HugeFree(void *p, size_t size)
+HugeFree(void *p, size_t size) noexcept
 {
 	munmap(p, AlignToPageSize(size));
 }
 
 void
-HugeDiscard(void *p, size_t size)
+HugeDiscard(void *p, size_t size) noexcept
 {
 #ifdef MADV_DONTNEED
 	madvise(p, AlignToPageSize(size), MADV_DONTNEED);
 #endif
+}
+
+#elif defined(WIN32)
+
+void *
+HugeAllocate(size_t size)
+{
+	// TODO: use MEM_LARGE_PAGES
+	void *p = VirtualAlloc(nullptr, size,
+			       MEM_COMMIT|MEM_RESERVE,
+			       PAGE_READWRITE);
+	if (p == nullptr)
+		throw std::bad_alloc();
+
+	return p;
 }
 
 #endif

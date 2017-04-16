@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -27,10 +27,16 @@
 
 template<typename T> class AllocatedString;
 
+/**
+ * Throws std::system_error on error.
+ */
 gcc_pure gcc_nonnull_all
 AllocatedString<char>
 WideCharToMultiByte(unsigned code_page, const wchar_t *src);
 
+/**
+ * Throws std::system_error on error.
+ */
 gcc_pure gcc_nonnull_all
 AllocatedString<wchar_t>
 MultiByteToWideChar(unsigned code_page, const char *src);

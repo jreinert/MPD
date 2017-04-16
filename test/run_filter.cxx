@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -27,10 +27,13 @@
 #include "filter/FilterInternal.hxx"
 #include "pcm/Volume.hxx"
 #include "mixer/MixerControl.hxx"
-#include "util/Error.hxx"
 #include "util/ConstBuffer.hxx"
+#include "util/StringBuffer.hxx"
 #include "system/FatalError.hxx"
 #include "Log.hxx"
+
+#include <memory>
+#include <stdexcept>
 
 #include <assert.h>
 #include <string.h>
@@ -39,14 +42,13 @@
 #include <errno.h>
 #include <unistd.h>
 
-bool
+void
 mixer_set_volume(gcc_unused Mixer *mixer,
-		 gcc_unused unsigned volume, gcc_unused Error &error)
+		 gcc_unused unsigned volume)
 {
-	return true;
 }
 
-static Filter *
+static PreparedFilter *
 load_filter(const char *name)
 {
 	const auto *param = config_find_block(ConfigBlockOption::AUDIO_FILTER,
@@ -56,19 +58,11 @@ load_filter(const char *name)
 		return nullptr;
 	}
 
-	Error error;
-	Filter *filter = filter_configured_new(*param, error);
-	if (filter == NULL) {
-		LogError(error, "Failed to load filter");
-		return NULL;
-	}
-
-	return filter;
+	return filter_configured_new(*param);
 }
 
 int main(int argc, char **argv)
 try {
-	struct audio_format_string af_string;
 	char buffer[4096];
 
 	if (argc < 3 || argc > 4) {
@@ -87,32 +81,23 @@ try {
 
 	/* parse the audio format */
 
-	if (argc > 3) {
-		Error error;
-		if (!audio_format_parse(audio_format, argv[3], false, error)) {
-			LogError(error, "Failed to parse audio format");
-			return EXIT_FAILURE;
-		}
-	}
+	if (argc > 3)
+		audio_format = ParseAudioFormat(argv[3], false);
 
 	/* initialize the filter */
 
-	Filter *filter = load_filter(argv[2]);
-	if (filter == NULL)
+	std::unique_ptr<PreparedFilter> prepared_filter(load_filter(argv[2]));
+	if (!prepared_filter)
 		return EXIT_FAILURE;
 
 	/* open the filter */
 
-	Error error;
-	const AudioFormat out_audio_format = filter->Open(audio_format, error);
-	if (!out_audio_format.IsDefined()) {
-		LogError(error, "Failed to open filter");
-		delete filter;
-		return EXIT_FAILURE;
-	}
+	std::unique_ptr<Filter> filter(prepared_filter->Open(audio_format));
+
+	const AudioFormat out_audio_format = filter->GetOutAudioFormat();
 
 	fprintf(stderr, "audio_format=%s\n",
-		audio_format_to_string(out_audio_format, &af_string));
+		ToString(out_audio_format).c_str());
 
 	/* play */
 
@@ -123,34 +108,22 @@ try {
 		if (nbytes <= 0)
 			break;
 
-		auto dest = filter->FilterPCM({(const void *)buffer, (size_t)nbytes},
-					      error);
-		if (dest.IsNull()) {
-			LogError(error, "filter/Filter failed");
-			filter->Close();
-			delete filter;
-			return EXIT_FAILURE;
-		}
+		auto dest = filter->FilterPCM({(const void *)buffer, (size_t)nbytes});
 
 		nbytes = write(1, dest.data, dest.size);
 		if (nbytes < 0) {
 			fprintf(stderr, "Failed to write: %s\n",
 				strerror(errno));
-			filter->Close();
-			delete filter;
 			return 1;
 		}
 	}
 
 	/* cleanup and exit */
 
-	filter->Close();
-	delete filter;
-
 	config_global_finish();
 
 	return EXIT_SUCCESS;
- } catch (const std::exception &e) {
+} catch (const std::exception &e) {
 	LogError(e);
 	return EXIT_FAILURE;
- }
+}

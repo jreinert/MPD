@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -21,13 +21,12 @@
 #define MPD_LISTEN_HXX
 
 class EventLoop;
-class Error;
 struct Partition;
 
 extern int listen_port;
 
-bool
-listen_global_init(EventLoop &loop, Partition &partition, Error &error);
+void
+listen_global_init(EventLoop &loop, Partition &partition);
 
 void
 listen_global_finish();

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -20,8 +20,6 @@
 #include "config.h"
 #include "BufferedSocket.hxx"
 #include "net/SocketError.hxx"
-#include "util/Error.hxx"
-#include "util/Domain.hxx"
 #include "Compiler.h"
 
 #include <algorithm>
@@ -45,7 +43,7 @@ BufferedSocket::DirectRead(void *data, size_t length)
 	if (IsSocketErrorClosed(code))
 		OnSocketClosed();
 	else
-		OnSocketError(NewSocketError(code));
+		OnSocketError(std::make_exception_ptr(MakeSocketError(code, "Failed to receive from socket")));
 	return -1;
 }
 
@@ -80,12 +78,7 @@ BufferedSocket::ResumeInput()
 		switch (result) {
 		case InputResult::MORE:
 			if (input.IsFull()) {
-				// TODO
-				static constexpr Domain buffered_socket_domain("buffered_socket");
-				Error error;
-				error.Set(buffered_socket_domain,
-					  "Input buffer is full");
-				OnSocketError(std::move(error));
+				OnSocketError(std::make_exception_ptr(std::runtime_error("Input buffer is full")));
 				return false;
 			}
 
@@ -118,8 +111,14 @@ BufferedSocket::OnSocketReady(unsigned flags)
 	if (flags & READ) {
 		assert(!input.IsFull());
 
-		if (!ReadToBuffer() || !ResumeInput())
+		if (!ReadToBuffer())
 			return false;
+
+		if (!ResumeInput())
+			/* we must return "true" here or
+			   SocketMonitor::Dispatch() will call
+			   Cancel() on a freed object */
+			return true;
 
 		if (!input.IsFull())
 			ScheduleRead();

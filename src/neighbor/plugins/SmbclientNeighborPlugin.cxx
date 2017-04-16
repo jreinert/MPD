@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -30,14 +30,10 @@
 #include "thread/Cond.hxx"
 #include "thread/Thread.hxx"
 #include "thread/Name.hxx"
-#include "util/Macros.hxx"
-#include "util/Domain.hxx"
-#include "util/Error.hxx"
 #include "Log.hxx"
 
 #include <libsmbclient.h>
 
-#include <list>
 #include <algorithm>
 
 class SmbclientNeighborExplorer final : public NeighborExplorer {
@@ -73,24 +69,24 @@ class SmbclientNeighborExplorer final : public NeighborExplorer {
 
 public:
 	SmbclientNeighborExplorer(NeighborListener &_listener)
-		:NeighborExplorer(_listener) {}
+		:NeighborExplorer(_listener),
+		 thread(BIND_THIS_METHOD(ThreadFunc)) {}
 
 	/* virtual methods from class NeighborExplorer */
-	virtual bool Open(Error &error) override;
+	void Open() override;
 	virtual void Close() override;
 	virtual List GetList() const override;
 
 private:
 	void Run();
 	void ThreadFunc();
-	static void ThreadFunc(void *ctx);
 };
 
-bool
-SmbclientNeighborExplorer::Open(Error &error)
+void
+SmbclientNeighborExplorer::Open()
 {
 	quit = false;
-	return thread.Start(ThreadFunc, this, error);
+	thread.Start();
 }
 
 void
@@ -107,7 +103,7 @@ SmbclientNeighborExplorer::Close()
 NeighborExplorer::List
 SmbclientNeighborExplorer::GetList() const
 {
-	const ScopeLock protect(mutex);
+	const std::lock_guard<Mutex> protect(mutex);
 	/*
 	List list;
 	for (const auto &i : servers)
@@ -176,7 +172,7 @@ static NeighborExplorer::List
 DetectServers()
 {
 	NeighborExplorer::List list;
-	const ScopeLock protect(smbclient_mutex);
+	const std::lock_guard<Mutex> protect(smbclient_mutex);
 	ReadServers(list, "smb://");
 	return list;
 }
@@ -243,6 +239,8 @@ SmbclientNeighborExplorer::Run()
 inline void
 SmbclientNeighborExplorer::ThreadFunc()
 {
+	SetThreadName("smbclient");
+
 	mutex.lock();
 
 	while (!quit) {
@@ -255,29 +253,18 @@ SmbclientNeighborExplorer::ThreadFunc()
 			break;
 
 		// TODO: sleep for how long?
-		cond.timed_wait(mutex, 10000);
+		cond.timed_wait(mutex, std::chrono::seconds(10));
 	}
 
 	mutex.unlock();
 }
 
-void
-SmbclientNeighborExplorer::ThreadFunc(void *ctx)
-{
-	SetThreadName("smbclient");
-
-	SmbclientNeighborExplorer &e = *(SmbclientNeighborExplorer *)ctx;
-	e.ThreadFunc();
-}
-
 static NeighborExplorer *
 smbclient_neighbor_create(gcc_unused EventLoop &loop,
 			  NeighborListener &listener,
-			  gcc_unused const ConfigBlock &block,
-			  gcc_unused Error &error)
+			  gcc_unused const ConfigBlock &block)
 {
-	if (!SmbclientInit(error))
-		return nullptr;
+	SmbclientInit();
 
 	return new SmbclientNeighborExplorer(listener);
 }

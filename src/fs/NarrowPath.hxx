@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -43,7 +43,7 @@ class NarrowPath {
 #else
 	typedef StringPointer<> Value;
 #endif
-	typedef typename Value::const_pointer const_pointer;
+	typedef typename Value::const_pointer_type const_pointer_type;
 
 	Value value;
 
@@ -59,11 +59,11 @@ public:
 	explicit NarrowPath(Path _path):value(_path.c_str()) {}
 #endif
 
-	operator const_pointer() const {
+	operator const_pointer_type() const {
 		return c_str();
 	}
 
-	const_pointer c_str() const {
+	const_pointer_type c_str() const {
 		return value.c_str();
 	}
 };

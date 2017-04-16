@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -23,10 +23,11 @@
 #include "filter/FilterInternal.hxx"
 #include "filter/FilterRegistry.hxx"
 #include "AudioFormat.hxx"
-#include "util/Error.hxx"
-#include "util/Domain.hxx"
 #include "util/ConstBuffer.hxx"
+#include "util/StringBuffer.hxx"
+#include "util/RuntimeError.hxx"
 
+#include <memory>
 #include <list>
 
 #include <assert.h>
@@ -49,132 +50,123 @@ class ChainFilter final : public Filter {
 	std::list<Child> children;
 
 public:
+	explicit ChainFilter(AudioFormat _audio_format)
+		:Filter(_audio_format) {}
+
 	void Append(const char *name, Filter *filter) {
+		assert(out_audio_format.IsValid());
+		out_audio_format = filter->GetOutAudioFormat();
+		assert(out_audio_format.IsValid());
+
 		children.emplace_back(name, filter);
 	}
 
 	/* virtual methods from class Filter */
-	AudioFormat Open(AudioFormat &af, Error &error) override;
-	void Close() override;
-	ConstBuffer<void> FilterPCM(ConstBuffer<void> src,
-					    Error &error) override;
-
-private:
-	/**
-	 * Close all filters in the chain until #until is reached.
-	 * #until itself is not closed.
-	 */
-	void CloseUntil(const Filter *until);
+	void Reset() override;
+	ConstBuffer<void> FilterPCM(ConstBuffer<void> src) override;
 };
 
-static constexpr Domain chain_filter_domain("chain_filter");
+class PreparedChainFilter final : public PreparedFilter {
+	struct Child {
+		const char *name;
+		PreparedFilter *filter;
 
-static Filter *
-chain_filter_init(gcc_unused const ConfigBlock &block,
-		  gcc_unused Error &error)
-{
-	return new ChainFilter();
-}
+		Child(const char *_name, PreparedFilter *_filter)
+			:name(_name), filter(_filter) {}
+		~Child() {
+			delete filter;
+		}
 
-void
-ChainFilter::CloseUntil(const Filter *until)
-{
-	for (auto &child : children) {
-		if (child.filter == until)
-			/* don't close this filter */
-			return;
+		Child(const Child &) = delete;
+		Child &operator=(const Child &) = delete;
 
-		/* close this filter */
-		child.filter->Close();
+		Filter *Open(const AudioFormat &prev_audio_format);
+	};
+
+	std::list<Child> children;
+
+public:
+	void Append(const char *name, PreparedFilter *filter) {
+		children.emplace_back(name, filter);
 	}
 
-	/* this assertion fails if #until does not exist (anymore) */
-	assert(false);
-	gcc_unreachable();
+	/* virtual methods from class PreparedFilter */
+	Filter *Open(AudioFormat &af) override;
+};
+
+static PreparedFilter *
+chain_filter_init(gcc_unused const ConfigBlock &block)
+{
+	return new PreparedChainFilter();
 }
 
-static AudioFormat
-chain_open_child(const char *name, Filter *filter,
-		 const AudioFormat &prev_audio_format,
-		 Error &error)
+Filter *
+PreparedChainFilter::Child::Open(const AudioFormat &prev_audio_format)
 {
 	AudioFormat conv_audio_format = prev_audio_format;
-	const AudioFormat next_audio_format =
-		filter->Open(conv_audio_format, error);
-	if (!next_audio_format.IsDefined())
-		return next_audio_format;
+	Filter *new_filter = filter->Open(conv_audio_format);
 
 	if (conv_audio_format != prev_audio_format) {
-		struct audio_format_string s;
+		delete new_filter;
 
-		filter->Close();
-
-		error.Format(chain_filter_domain,
-			     "Audio format not supported by filter '%s': %s",
-			     name,
-			     audio_format_to_string(prev_audio_format, &s));
-		return AudioFormat::Undefined();
+		throw FormatRuntimeError("Audio format not supported by filter '%s': %s",
+					 name,
+					 ToString(prev_audio_format).c_str());
 	}
 
-	return next_audio_format;
+	return new_filter;
 }
 
-AudioFormat
-ChainFilter::Open(AudioFormat &in_audio_format, Error &error)
+Filter *
+PreparedChainFilter::Open(AudioFormat &in_audio_format)
 {
-	AudioFormat audio_format = in_audio_format;
+	std::unique_ptr<ChainFilter> chain(new ChainFilter(in_audio_format));
 
 	for (auto &child : children) {
-		audio_format = chain_open_child(child.name, child.filter,
-						audio_format, error);
-		if (!audio_format.IsDefined()) {
-			/* rollback, close all children */
-			CloseUntil(child.filter);
-			break;
-		}
+		AudioFormat audio_format = chain->GetOutAudioFormat();
+		auto *filter = child.Open(audio_format);
+		chain->Append(child.name, filter);
 	}
 
-	/* return the output format of the last filter */
-	return audio_format;
+	return chain.release();
 }
 
 void
-ChainFilter::Close()
+ChainFilter::Reset()
 {
 	for (auto &child : children)
-		child.filter->Close();
+		child.filter->Reset();
 }
 
 ConstBuffer<void>
-ChainFilter::FilterPCM(ConstBuffer<void> src, Error &error)
+ChainFilter::FilterPCM(ConstBuffer<void> src)
 {
 	for (auto &child : children) {
 		/* feed the output of the previous filter as input
 		   into the current one */
-		src = child.filter->FilterPCM(src, error);
-		if (src.IsNull())
-			return nullptr;
+		src = child.filter->FilterPCM(src);
 	}
 
 	/* return the output of the last filter */
 	return src;
 }
 
-const struct filter_plugin chain_filter_plugin = {
+const FilterPlugin chain_filter_plugin = {
 	"chain",
 	chain_filter_init,
 };
 
-Filter *
+PreparedFilter *
 filter_chain_new(void)
 {
-	return new ChainFilter();
+	return new PreparedChainFilter();
 }
 
 void
-filter_chain_append(Filter &_chain, const char *name, Filter *filter)
+filter_chain_append(PreparedFilter &_chain, const char *name,
+		    PreparedFilter *filter)
 {
-	ChainFilter &chain = (ChainFilter &)_chain;
+	PreparedChainFilter &chain = (PreparedChainFilter &)_chain;
 
 	chain.Append(name, filter);
 }

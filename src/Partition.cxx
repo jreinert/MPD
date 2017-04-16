@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -21,23 +21,66 @@
 #include "Partition.hxx"
 #include "Instance.hxx"
 #include "DetachedSong.hxx"
-#include "output/MultipleOutputs.hxx"
 #include "mixer/Volume.hxx"
-#include "Idle.hxx"
-#include "GlobalEvents.hxx"
+#include "IdleFlags.hxx"
+
+Partition::Partition(Instance &_instance,
+		     const char *_name,
+		     unsigned max_length,
+		     unsigned buffer_chunks,
+		     unsigned buffered_before_play,
+		     AudioFormat configured_audio_format,
+		     const ReplayGainConfig &replay_gain_config)
+	:instance(_instance),
+	 name(_name),
+	 global_events(instance.event_loop, BIND_THIS_METHOD(OnGlobalEvent)),
+	 playlist(max_length, *this),
+	 outputs(*this),
+	 pc(*this, outputs, buffer_chunks, buffered_before_play,
+	    configured_audio_format, replay_gain_config)
+{
+	UpdateEffectiveReplayGainMode();
+}
+
+void
+Partition::EmitIdle(unsigned mask)
+{
+	instance.EmitIdle(mask);
+}
+
+void
+Partition::UpdateEffectiveReplayGainMode()
+{
+	auto mode = replay_gain_mode;
+	if (mode == ReplayGainMode::AUTO)
+	    mode = playlist.queue.random
+		    ? ReplayGainMode::TRACK
+		    : ReplayGainMode::ALBUM;
+
+	pc.LockSetReplayGainMode(mode);
+
+	outputs.SetReplayGainMode(mode);
+}
 
 #ifdef ENABLE_DATABASE
 
 const Database *
-Partition::GetDatabase(Error &error) const
+Partition::GetDatabase() const
 {
-	return instance.GetDatabase(error);
+	return instance.GetDatabase();
+}
+
+const Database &
+Partition::GetDatabaseOrThrow() const
+{
+	return instance.GetDatabaseOrThrow();
 }
 
 void
 Partition::DatabaseModified(const Database &db)
 {
 	playlist.DatabaseModified(db);
+	EmitIdle(IDLE_DATABASE);
 }
 
 #endif
@@ -59,15 +102,33 @@ Partition::SyncWithPlayer()
 }
 
 void
+Partition::OnQueueModified()
+{
+	EmitIdle(IDLE_PLAYLIST);
+}
+
+void
+Partition::OnQueueOptionsChanged()
+{
+	EmitIdle(IDLE_OPTIONS);
+}
+
+void
+Partition::OnQueueSongStarted()
+{
+	EmitIdle(IDLE_PLAYER);
+}
+
+void
 Partition::OnPlayerSync()
 {
-	GlobalEvents::Emit(GlobalEvents::PLAYLIST);
+	EmitGlobalEvent(SYNC_WITH_PLAYER);
 }
 
 void
 Partition::OnPlayerTagModified()
 {
-	GlobalEvents::Emit(GlobalEvents::TAG);
+	EmitGlobalEvent(TAG_MODIFIED);
 }
 
 void
@@ -76,5 +137,15 @@ Partition::OnMixerVolumeChanged(gcc_unused Mixer &mixer, gcc_unused int volume)
 	InvalidateHardwareVolume();
 
 	/* notify clients */
-	idle_add(IDLE_MIXER);
+	EmitIdle(IDLE_MIXER);
+}
+
+void
+Partition::OnGlobalEvent(unsigned mask)
+{
+	if ((mask & SYNC_WITH_PLAYER) != 0)
+		SyncWithPlayer();
+
+	if ((mask & TAG_MODIFIED) != 0)
+		TagModified();
 }

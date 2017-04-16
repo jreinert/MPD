@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -25,18 +25,42 @@
 
 const Domain client_domain("client");
 
+Instance &
+Client::GetInstance()
+{
+	return partition->instance;
+}
+
+playlist &
+Client::GetPlaylist()
+{
+	return partition->playlist;
+}
+
+PlayerControl &
+Client::GetPlayerControl()
+{
+	return partition->pc;
+}
+
 #ifdef ENABLE_DATABASE
 
 const Database *
-Client::GetDatabase(Error &error) const
+Client::GetDatabase() const
 {
-	return partition.instance.GetDatabase(error);
+	return partition->instance.GetDatabase();
+}
+
+const Database &
+Client::GetDatabaseOrThrow() const
+{
+	return partition->instance.GetDatabaseOrThrow();
 }
 
 const Storage *
 Client::GetStorage() const
 {
-	return partition.instance.storage;
+	return partition->instance.storage;
 }
 
 #endif

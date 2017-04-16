@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -24,7 +24,6 @@
 #include "neighbor/Glue.hxx"
 #include "fs/Path.hxx"
 #include "event/Loop.hxx"
-#include "util/Error.hxx"
 #include "Log.hxx"
 
 #include <stdio.h>
@@ -56,8 +55,6 @@ try {
 
 	/* read configuration file (mpd.conf) */
 
-	Error error;
-
 	config_global_init();
 	ReadConfigFile(config_path);
 
@@ -69,17 +66,15 @@ try {
 
 	MyNeighborListener listener;
 	NeighborGlue neighbor;
-	if (!neighbor.Init(loop, listener, error) || !neighbor.Open(error)) {
-		LogError(error);
-		return EXIT_FAILURE;
-	}
+	neighbor.Init(loop, listener);
+	neighbor.Open();
 
 	/* run */
 
 	loop.Run();
 	neighbor.Close();
 	return EXIT_SUCCESS;
- } catch (const std::exception &e) {
+} catch (const std::exception &e) {
 	LogError(e);
 	return EXIT_FAILURE;
- }
+}

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -23,8 +23,7 @@
 #include <assert.h>
 
 AudioFormat
-FallbackPcmResampler::Open(AudioFormat &af, unsigned new_sample_rate,
-			   gcc_unused Error &error)
+FallbackPcmResampler::Open(AudioFormat &af, unsigned new_sample_rate)
 {
 	assert(af.IsValid());
 	assert(audio_valid_sample_rate(new_sample_rate));
@@ -116,7 +115,7 @@ pcm_resample_fallback_void(PcmBuffer &buffer,
 }
 
 ConstBuffer<void>
-FallbackPcmResampler::Resample(ConstBuffer<void> src, gcc_unused Error &error)
+FallbackPcmResampler::Resample(ConstBuffer<void> src)
 {
 	switch (format.format) {
 	case SampleFormat::UNDEFINED:

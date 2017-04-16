@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -19,7 +19,6 @@
 
 #include "config.h"
 #include "lib/upnp/ContentDirectoryService.hxx"
-#include "lib/upnp/Domain.hxx"
 #include "lib/upnp/ixmlwrap.hxx"
 #include "lib/upnp/UniqueIxml.hxx"
 #include "lib/upnp/Action.hxx"
@@ -27,7 +26,6 @@
 #include "util/NumberParser.hxx"
 #include "util/UriUtil.hxx"
 #include "util/RuntimeError.hxx"
-#include "util/Error.hxx"
 #include "util/ScopeExit.hxx"
 
 #include <stdio.h>

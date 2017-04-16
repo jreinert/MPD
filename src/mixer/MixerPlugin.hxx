@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -32,22 +32,20 @@ struct AudioOutput;
 class Mixer;
 class MixerListener;
 class EventLoop;
-class Error;
 
 struct MixerPlugin {
 	/**
          * Alocates and configures a mixer device.
 	 *
+	 * Throws std::runtime_error on error.
+	 *
 	 * @param ao the associated AudioOutput
 	 * @param param the configuration section
-	 * @param error_r location to store the error occurring, or
-	 * nullptr to ignore errors
-	 * @return a mixer object, or nullptr on error
+	 * @return a mixer object
 	 */
 	Mixer *(*init)(EventLoop &event_loop, AudioOutput &ao,
 		       MixerListener &listener,
-		       const ConfigBlock &block,
-		       Error &error);
+		       const ConfigBlock &block);
 
 	/**
 	 * If true, then the mixer is automatically opened, even if

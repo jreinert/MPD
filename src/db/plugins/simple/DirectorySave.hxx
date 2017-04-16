@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -23,12 +23,14 @@
 struct Directory;
 class TextFile;
 class BufferedOutputStream;
-class Error;
 
 void
 directory_save(BufferedOutputStream &os, const Directory &directory);
 
-bool
-directory_load(TextFile &file, Directory &directory, Error &error);
+/**
+ * Throws #std::runtime_error on error.
+ */
+void
+directory_load(TextFile &file, Directory &directory);
 
 #endif

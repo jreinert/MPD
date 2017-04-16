@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -20,19 +20,21 @@
 #include "config.h"
 #include "output/Internal.hxx"
 #include "output/OutputPlugin.hxx"
+#include "output/Client.hxx"
 #include "config/Param.hxx"
 #include "config/ConfigGlobal.hxx"
 #include "config/ConfigOption.hxx"
 #include "Idle.hxx"
 #include "Main.hxx"
-#include "event/Loop.hxx"
-#include "ScopeIOThread.hxx"
+#include "event/Thread.hxx"
 #include "fs/Path.hxx"
 #include "AudioParser.hxx"
+#include "ReplayGainConfig.hxx"
 #include "pcm/PcmConvert.hxx"
 #include "filter/FilterRegistry.hxx"
-#include "player/Control.hxx"
-#include "util/Error.hxx"
+#include "util/StringBuffer.hxx"
+#include "util/RuntimeError.hxx"
+#include "util/ScopeExit.hxx"
 #include "Log.hxx"
 
 #include <assert.h>
@@ -41,68 +43,53 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-const struct filter_plugin *
+void AudioOutput::Task() {}
+
+class DummyAudioOutputClient final : public AudioOutputClient {
+public:
+	/* virtual methods from AudioOutputClient */
+	void ChunksConsumed() override {
+	}
+
+	void ApplyEnabled() override {
+	}
+};
+
+const FilterPlugin *
 filter_plugin_by_name(gcc_unused const char *name)
 {
 	assert(false);
 	return NULL;
 }
 
-PlayerControl::PlayerControl(PlayerListener &_listener,
-			     MultipleOutputs &_outputs,
-			     unsigned _buffer_chunks,
-			     unsigned _buffered_before_play)
-	:listener(_listener), outputs(_outputs),
-	 buffer_chunks(_buffer_chunks),
-	 buffered_before_play(_buffered_before_play) {}
-PlayerControl::~PlayerControl() {}
-
 static AudioOutput *
-load_audio_output(EventLoop &event_loop, const char *name)
+load_audio_output(EventLoop &event_loop, AudioOutputClient &client,
+		  const char *name)
 {
 	const auto *param = config_find_block(ConfigBlockOption::AUDIO_OUTPUT,
 					      "name", name);
-	if (param == NULL) {
-		fprintf(stderr, "No such configured audio output: %s\n", name);
-		return nullptr;
-	}
+	if (param == NULL)
+		throw FormatRuntimeError("No such configured audio output: %s\n",
+					 name);
 
-	static struct PlayerControl dummy_player_control(*(PlayerListener *)nullptr,
-							 *(MultipleOutputs *)nullptr,
-							 32, 4);
-
-	Error error;
-	AudioOutput *ao =
-		audio_output_new(event_loop, *param,
-				 *(MixerListener *)nullptr,
-				 dummy_player_control,
-				 error);
-	if (ao == nullptr)
-		LogError(error);
-
-	return ao;
+	return audio_output_new(event_loop, ReplayGainConfig(), *param,
+				*(MixerListener *)nullptr,
+				client);
 }
 
-static bool
-run_output(AudioOutput *ao, AudioFormat audio_format)
+static void
+run_output(AudioOutput &ao, AudioFormat audio_format)
 {
 	/* open the audio output */
 
-	Error error;
-	if (!ao_plugin_enable(ao, error)) {
-		LogError(error, "Failed to enable audio output");
-		return false;
-	}
+	ao_plugin_enable(ao);
+	AtScopeExit(&ao) { ao_plugin_disable(ao); };
 
-	if (!ao_plugin_open(ao, audio_format, error)) {
-		ao_plugin_disable(ao);
-		LogError(error, "Failed to open audio output");
-		return false;
-	}
+	ao_plugin_open(ao, audio_format);
+	AtScopeExit(&ao) { ao_plugin_close(ao); };
 
-	struct audio_format_string af_string;
 	fprintf(stderr, "audio_format=%s\n",
-		audio_format_to_string(audio_format, &af_string));
+		ToString(audio_format).c_str());
 
 	size_t frame_size = audio_format.GetFrameSize();
 
@@ -123,14 +110,7 @@ run_output(AudioOutput *ao, AudioFormat audio_format)
 		size_t play_length = (length / frame_size) * frame_size;
 		if (play_length > 0) {
 			size_t consumed = ao_plugin_play(ao,
-							 buffer, play_length,
-							 error);
-			if (consumed == 0) {
-				ao_plugin_close(ao);
-				ao_plugin_disable(ao);
-				LogError(error, "Failed to play");
-				return false;
-			}
+							 buffer, play_length);
 
 			assert(consumed <= length);
 			assert(consumed % frame_size == 0);
@@ -139,16 +119,10 @@ run_output(AudioOutput *ao, AudioFormat audio_format)
 			memmove(buffer, buffer + consumed, length);
 		}
 	}
-
-	ao_plugin_close(ao);
-	ao_plugin_disable(ao);
-	return true;
 }
 
 int main(int argc, char **argv)
 try {
-	Error error;
-
 	if (argc < 3 || argc > 4) {
 		fprintf(stderr, "Usage: run_output CONFIG NAME [FORMAT] <IN\n");
 		return EXIT_FAILURE;
@@ -163,28 +137,23 @@ try {
 	config_global_init();
 	ReadConfigFile(config_path);
 
-	EventLoop event_loop;
-
-	const ScopeIOThread io_thread;
+	EventThread io_thread;
+	io_thread.Start();
 
 	/* initialize the audio output */
 
-	AudioOutput *ao = load_audio_output(event_loop, argv[2]);
-	if (ao == NULL)
-		return 1;
+	DummyAudioOutputClient client;
+	AudioOutput *ao = load_audio_output(io_thread.GetEventLoop(), client,
+					    argv[2]);
 
 	/* parse the audio format */
 
-	if (argc > 3) {
-		if (!audio_format_parse(audio_format, argv[3], false, error)) {
-			LogError(error, "Failed to parse audio format");
-			return EXIT_FAILURE;
-		}
-	}
+	if (argc > 3)
+		audio_format = ParseAudioFormat(argv[3], false);
 
 	/* do it */
 
-	bool success = run_output(ao, audio_format);
+	run_output(*ao, audio_format);
 
 	/* cleanup and exit */
 
@@ -192,7 +161,7 @@ try {
 
 	config_global_finish();
 
-	return success ? EXIT_SUCCESS : EXIT_FAILURE;
+	return EXIT_SUCCESS;
  } catch (const std::exception &e) {
 	LogError(e);
 	return EXIT_FAILURE;

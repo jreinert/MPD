@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -25,13 +25,12 @@
 #include "config/ConfigGlobal.hxx"
 #include "decoder/DecoderList.hxx"
 #include "input/Init.hxx"
-#include "ScopeIOThread.hxx"
+#include "event/Thread.hxx"
 #include "playlist/PlaylistRegistry.hxx"
 #include "playlist/PlaylistPlugin.hxx"
 #include "fs/Path.hxx"
 #include "fs/io/BufferedOutputStream.hxx"
 #include "fs/io/StdioOutputStream.hxx"
-#include "util/Error.hxx"
 #include "thread/Cond.hxx"
 #include "Log.hxx"
 
@@ -63,16 +62,12 @@ try {
 
 	config_global_init();
 
-	Error error;
 	ReadConfigFile(config_path);
 
-	const ScopeIOThread io_thread;
+	EventThread io_thread;
+	io_thread.Start();
 
-	if (!input_stream_global_init(error)) {
-		LogError(error);
-		return EXIT_FAILURE;
-	}
-
+	input_stream_global_init(io_thread.GetEventLoop());
 	playlist_list_global_init();
 	decoder_plugin_init_all();
 
@@ -86,15 +81,7 @@ try {
 	if (playlist == NULL) {
 		/* open the stream and wait until it becomes ready */
 
-		is = InputStream::OpenReady(uri, mutex, cond, error);
-		if (!is) {
-			if (error.IsDefined())
-				LogError(error);
-			else
-				fprintf(stderr,
-					"InputStream::Open() failed\n");
-			return 2;
-		}
+		is = InputStream::OpenReady(uri, mutex, cond);
 
 		/* open the playlist */
 

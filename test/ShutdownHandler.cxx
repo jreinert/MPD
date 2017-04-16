@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -27,17 +27,18 @@
 #include <signal.h>
 
 static void
-HandleShutdownSignal()
+HandleShutdownSignal(void *ctx)
 {
-	SignalMonitorGetEventLoop().Break();
+	auto &loop = *(EventLoop *)ctx;
+	loop.Break();
 }
 
 ShutdownHandler::ShutdownHandler(EventLoop &loop)
 {
 	SignalMonitorInit(loop);
 
-	SignalMonitorRegister(SIGINT, HandleShutdownSignal);
-	SignalMonitorRegister(SIGTERM, HandleShutdownSignal);
+	SignalMonitorRegister(SIGINT, {&loop, HandleShutdownSignal});
+	SignalMonitorRegister(SIGTERM, {&loop, HandleShutdownSignal});
 }
 
 ShutdownHandler::~ShutdownHandler()

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -22,7 +22,6 @@
 
 #include <forward_list>
 
-class Error;
 class NeighborListener;
 struct NeighborInfo;
 
@@ -54,8 +53,10 @@ public:
 
 	/**
          * Start exploring the neighborhood.
+	 *
+	 * Throws std::runtime_error on error.
 	 */
-	virtual bool Open(Error &error) = 0;
+	virtual void Open() = 0;
 
 	/**
          * Stop exploring.

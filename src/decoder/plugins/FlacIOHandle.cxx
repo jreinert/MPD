@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -19,8 +19,9 @@
 
 #include "config.h"
 #include "FlacIOHandle.hxx"
-#include "util/Error.hxx"
+#include "Log.hxx"
 #include "Compiler.h"
+#include "system/Error.hxx"
 
 #include <errno.h>
 #include <stdio.h>
@@ -36,24 +37,29 @@ FlacIORead(void *ptr, size_t size, size_t nmemb, FLAC__IOHandle handle)
 	/* libFLAC is very picky about short reads, and expects the IO
 	   callback to fill the whole buffer (undocumented!) */
 
-	Error error;
 	while (p < end) {
-		size_t nbytes = is->LockRead(p, end - p, error);
-		if (nbytes == 0) {
-			if (!error.IsDefined())
+		try {
+			size_t nbytes = is->LockRead(p, end - p);
+			if (nbytes == 0)
 				/* end of file */
 				break;
 
-			if (error.IsDomain(errno_domain))
-				errno = error.GetCode();
-			else
-				/* just some random non-zero
-				   errno value */
-				errno = EINVAL;
+			p += nbytes;
+
+#ifndef WIN32
+		} catch (const std::system_error &e) {
+			errno = e.code().category() == ErrnoCategory()
+				? e.code().value()
+				/* just some random non-zero errno
+				   value */
+				: EINVAL;
+			return 0;
+#endif
+		} catch (const std::runtime_error &) {
+			/* just some random non-zero errno value */
+			errno = EINVAL;
 			return 0;
 		}
-
-		p += nbytes;
 	}
 
 	/* libFLAC expects a clean errno after returning from the IO
@@ -87,7 +93,13 @@ FlacIOSeek(FLAC__IOHandle handle, FLAC__int64 _offset, int whence)
 		return -1;
 	}
 
-	return is->LockSeek(offset, IgnoreError()) ? 0 : -1;
+	try {
+		is->LockSeek(offset);
+		return 0;
+	} catch (const std::runtime_error &e) {
+		LogError(e);
+		return -1;
+	}
 }
 
 static FLAC__int64

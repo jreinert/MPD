@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -23,8 +23,7 @@
 #include "config/ConfigGlobal.hxx"
 #include "input/InputStream.hxx"
 #include "input/Init.hxx"
-#include "ScopeIOThread.hxx"
-#include "util/Error.hxx"
+#include "event/Thread.hxx"
 #include "thread/Cond.hxx"
 #include "Log.hxx"
 #include "fs/io/BufferedOutputStream.hxx"
@@ -34,8 +33,32 @@
 #include "archive/ArchiveList.hxx"
 #endif
 
+#include <stdexcept>
+
 #include <unistd.h>
 #include <stdlib.h>
+
+class GlobalInit {
+	EventThread io_thread;
+
+public:
+	GlobalInit() {
+		io_thread.Start();
+		config_global_init();
+#ifdef ENABLE_ARCHIVE
+		archive_plugin_init_all();
+#endif
+		input_stream_global_init(io_thread.GetEventLoop());
+	}
+
+	~GlobalInit() {
+		input_stream_global_finish();
+#ifdef ENABLE_ARCHIVE
+		archive_plugin_deinit_all();
+#endif
+		config_global_finish();
+	}
+};
 
 static void
 tag_save(FILE *file, const Tag &tag)
@@ -49,7 +72,7 @@ tag_save(FILE *file, const Tag &tag)
 static int
 dump_input_stream(InputStream *is)
 {
-	is->Lock();
+	const std::lock_guard<Mutex> protect(is->mutex);
 
 	/* print meta data */
 
@@ -66,35 +89,23 @@ dump_input_stream(InputStream *is)
 			delete tag;
 		}
 
-		Error error;
 		char buffer[4096];
-		size_t num_read = is->Read(buffer, sizeof(buffer), error);
-		if (num_read == 0) {
-			if (error.IsDefined())
-				LogError(error);
-
+		size_t num_read = is->Read(buffer, sizeof(buffer));
+		if (num_read == 0)
 			break;
-		}
 
 		ssize_t num_written = write(1, buffer, num_read);
 		if (num_written <= 0)
 			break;
 	}
 
-	Error error;
-	if (!is->Check(error)) {
-		LogError(error);
-		is->Unlock();
-		return EXIT_FAILURE;
-	}
-
-	is->Unlock();
+	is->Check();
 
 	return 0;
 }
 
 int main(int argc, char **argv)
-{
+try {
 	if (argc != 2) {
 		fprintf(stderr, "Usage: run_input URI\n");
 		return EXIT_FAILURE;
@@ -102,47 +113,15 @@ int main(int argc, char **argv)
 
 	/* initialize MPD */
 
-	config_global_init();
-
-	const ScopeIOThread io_thread;
-
-#ifdef ENABLE_ARCHIVE
-	archive_plugin_init_all();
-#endif
-
-	Error error;
-	if (!input_stream_global_init(error)) {
-		LogError(error);
-		return 2;
-	}
+	const GlobalInit init;
 
 	/* open the stream and dump it */
 
-	int ret;
-	{
-		Mutex mutex;
-		Cond cond;
-		auto is = InputStream::OpenReady(argv[1], mutex, cond, error);
-		if (is) {
-			ret = dump_input_stream(is.get());
-		} else {
-			if (error.IsDefined())
-				LogError(error);
-			else
-				fprintf(stderr, "input_stream::Open() failed\n");
-			ret = EXIT_FAILURE;
-		}
-	}
-
-	/* deinitialize everything */
-
-	input_stream_global_finish();
-
-#ifdef ENABLE_ARCHIVE
-	archive_plugin_deinit_all();
-#endif
-
-	config_global_finish();
-
-	return ret;
+	Mutex mutex;
+	Cond cond;
+	auto is = InputStream::OpenReady(argv[1], mutex, cond);
+	return dump_input_stream(is.get());
+} catch (const std::exception &e) {
+	LogError(e);
+	return EXIT_FAILURE;
 }

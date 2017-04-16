@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -23,13 +23,13 @@
 #include "check.h"
 #include "Compiler.h"
 
-#include <string>
-
-class Error;
 template<typename T> class AllocatedString;
 
-bool
-IcuCollateInit(Error &error);
+/**
+ * Throws #std::runtime_error on error.
+ */
+void
+IcuCollateInit();
 
 void
 IcuCollateFinish();

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -25,15 +25,18 @@
 #include "pcm/Volume.hxx"
 #include "AudioFormat.hxx"
 #include "util/ConstBuffer.hxx"
-#include "util/Error.hxx"
 
-#include <assert.h>
-#include <string.h>
+#include <stdexcept>
 
 class VolumeFilter final : public Filter {
 	PcmVolume pv;
 
 public:
+	explicit VolumeFilter(const AudioFormat &audio_format)
+		:Filter(audio_format) {
+		pv.Open(out_audio_format.format);
+	}
+
 	unsigned GetVolume() const {
 		return pv.GetVolume();
 	}
@@ -43,41 +46,36 @@ public:
 	}
 
 	/* virtual methods from class Filter */
-	AudioFormat Open(AudioFormat &af, Error &error) override;
-	void Close() override;
-	ConstBuffer<void> FilterPCM(ConstBuffer<void> src,
-				    Error &error) override;
+	ConstBuffer<void> FilterPCM(ConstBuffer<void> src) override;
 };
 
-static Filter *
-volume_filter_init(gcc_unused const ConfigBlock &block,
-		   gcc_unused Error &error)
+class PreparedVolumeFilter final : public PreparedFilter {
+	PcmVolume pv;
+
+public:
+	/* virtual methods from class Filter */
+	Filter *Open(AudioFormat &af) override;
+};
+
+static PreparedFilter *
+volume_filter_init(gcc_unused const ConfigBlock &block)
 {
-	return new VolumeFilter();
+	return new PreparedVolumeFilter();
 }
 
-AudioFormat
-VolumeFilter::Open(AudioFormat &audio_format, Error &error)
+Filter *
+PreparedVolumeFilter::Open(AudioFormat &audio_format)
 {
-	if (!pv.Open(audio_format.format, error))
-		return AudioFormat::Undefined();
-
-	return audio_format;
-}
-
-void
-VolumeFilter::Close()
-{
-	pv.Close();
+	return new VolumeFilter(audio_format);
 }
 
 ConstBuffer<void>
-VolumeFilter::FilterPCM(ConstBuffer<void> src, gcc_unused Error &error)
+VolumeFilter::FilterPCM(ConstBuffer<void> src)
 {
 	return pv.Apply(src);
 }
 
-const struct filter_plugin volume_filter_plugin = {
+const FilterPlugin volume_filter_plugin = {
 	"volume",
 	volume_filter_init,
 };

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -47,18 +47,59 @@
 #include "filter/FilterInternal.hxx"
 #include "filter/FilterRegistry.hxx"
 #include "pcm/PcmBuffer.hxx"
+#include "pcm/Silence.hxx"
 #include "util/StringUtil.hxx"
-#include "util/Error.hxx"
+#include "util/RuntimeError.hxx"
 #include "util/ConstBuffer.hxx"
+#include "util/WritableBuffer.hxx"
 
 #include <algorithm>
+#include <array>
 
-#include <assert.h>
 #include <string.h>
 #include <stdint.h>
 #include <stdlib.h>
 
 class RouteFilter final : public Filter {
+	/**
+	 * The set of copy operations to perform on each sample
+	 * The index is an output channel to use, the value is
+	 * a corresponding input channel from which to take the
+	 * data. A -1 means "no source"
+	 */
+	const std::array<int8_t, MAX_CHANNELS> sources;
+
+	/**
+	 * The actual input format of our signal, once opened
+	 */
+	const AudioFormat input_format;
+
+	/**
+	 * The size, in bytes, of each multichannel frame in the
+	 * input buffer
+	 */
+	const size_t input_frame_size;
+
+	/**
+	 * The size, in bytes, of each multichannel frame in the
+	 * output buffer
+	 */
+	size_t output_frame_size;
+
+	/**
+	 * The output buffer used last time around, can be reused if the size doesn't differ.
+	 */
+	PcmBuffer output_buffer;
+
+public:
+	RouteFilter(const AudioFormat &audio_format, unsigned out_channels,
+		    const std::array<int8_t, MAX_CHANNELS> &_sources);
+
+	/* virtual methods from class Filter */
+	ConstBuffer<void> FilterPCM(ConstBuffer<void> src) override;
+};
+
+class PreparedRouteFilter final : public PreparedFilter {
 	/**
 	 * The minimum number of channels we need for output
 	 * to be able to perform all the copies the user has specified
@@ -79,34 +120,7 @@ class RouteFilter final : public Filter {
 	 * a corresponding input channel from which to take the
 	 * data. A -1 means "no source"
 	 */
-	int8_t sources[MAX_CHANNELS];
-
-	/**
-	 * The actual input format of our signal, once opened
-	 */
-	AudioFormat input_format;
-
-	/**
-	 * The decided upon output format, once opened
-	 */
-	AudioFormat output_format;
-
-	/**
-	 * The size, in bytes, of each multichannel frame in the
-	 * input buffer
-	 */
-	size_t input_frame_size;
-
-	/**
-	 * The size, in bytes, of each multichannel frame in the
-	 * output buffer
-	 */
-	size_t output_frame_size;
-
-	/**
-	 * The output buffer used last time around, can be reused if the size doesn't differ.
-	 */
-	PcmBuffer output_buffer;
+	std::array<int8_t, MAX_CHANNELS> sources;
 
 public:
 	/**
@@ -116,27 +130,22 @@ public:
 	 * and input channel a gets copied to output channel b, etc.
 	 * @param block the configuration block to read
 	 * @param filter a route_filter whose min_channels and sources[] to set
-	 * @return true on success, false on error
 	 */
-	bool Configure(const ConfigBlock &block, Error &error);
+	PreparedRouteFilter(const ConfigBlock &block);
 
-	/* virtual methods from class Filter */
-	AudioFormat Open(AudioFormat &af, Error &error) override;
-	void Close() override;
-	ConstBuffer<void> FilterPCM(ConstBuffer<void> src,
-				    Error &error) override;
+	/* virtual methods from class PreparedFilter */
+	Filter *Open(AudioFormat &af) override;
 };
 
-bool
-RouteFilter::Configure(const ConfigBlock &block, Error &error) {
-
+PreparedRouteFilter::PreparedRouteFilter(const ConfigBlock &block)
+{
 	/* TODO:
 	 * With a more clever way of marking "don't copy to output N",
 	 * This could easily be merged into a single loop with some
 	 * dynamic realloc() instead of one count run and one malloc().
 	 */
 
-	std::fill_n(sources, MAX_CHANNELS, -1);
+	sources.fill(-1);
 
 	min_input_channels = 0;
 	min_output_channels = 0;
@@ -149,18 +158,12 @@ RouteFilter::Configure(const ConfigBlock &block, Error &error) {
 		char *endptr;
 		const unsigned source = strtoul(routes, &endptr, 10);
 		endptr = StripLeft(endptr);
-		if (endptr == routes || *endptr != '>') {
-			error.Set(config_domain,
-				  "Malformed 'routes' specification");
-			return false;
-		}
+		if (endptr == routes || *endptr != '>')
+			throw std::runtime_error("Malformed 'routes' specification");
 
-		if (source >= MAX_CHANNELS) {
-			error.Format(config_domain,
-				     "Invalid source channel number: %u",
-				     source);
-			return false;
-		}
+		if (source >= MAX_CHANNELS)
+			throw FormatRuntimeError("Invalid source channel number: %u",
+						 source);
 
 		if (source >= min_input_channels)
 			min_input_channels = source + 1;
@@ -169,18 +172,12 @@ RouteFilter::Configure(const ConfigBlock &block, Error &error) {
 
 		unsigned dest = strtoul(routes, &endptr, 10);
 		endptr = StripLeft(endptr);
-		if (endptr == routes) {
-			error.Set(config_domain,
-				  "Malformed 'routes' specification");
-			return false;
-		}
+		if (endptr == routes)
+			throw std::runtime_error("Malformed 'routes' specification");
 
-		if (dest >= MAX_CHANNELS) {
-			error.Format(config_domain,
-				     "Invalid destination channel number: %u",
-				     dest);
-			return false;
-		}
+		if (dest >= MAX_CHANNELS)
+			throw FormatRuntimeError("Invalid destination channel number: %u",
+						 dest);
 
 		if (dest >= min_output_channels)
 			min_output_channels = dest + 1;
@@ -192,56 +189,41 @@ RouteFilter::Configure(const ConfigBlock &block, Error &error) {
 		if (*routes == 0)
 			break;
 
-		if (*routes != ',') {
-			error.Set(config_domain,
-				  "Malformed 'routes' specification");
-			return false;
-		}
+		if (*routes != ',')
+			throw std::runtime_error("Malformed 'routes' specification");
 
 		++routes;
 	}
-
-	return true;
 }
 
-static Filter *
-route_filter_init(const ConfigBlock &block, Error &error)
+static PreparedFilter *
+route_filter_init(const ConfigBlock &block)
 {
-	RouteFilter *filter = new RouteFilter();
-	if (!filter->Configure(block, error)) {
-		delete filter;
-		return nullptr;
-	}
-
-	return filter;
+	return new PreparedRouteFilter(block);
 }
 
-AudioFormat
-RouteFilter::Open(AudioFormat &audio_format, gcc_unused Error &error)
+RouteFilter::RouteFilter(const AudioFormat &audio_format,
+			 unsigned out_channels,
+			 const std::array<int8_t, MAX_CHANNELS> &_sources)
+	:Filter(audio_format), sources(_sources), input_format(audio_format),
+	 input_frame_size(input_format.GetFrameSize())
 {
-	// Copy the input format for later reference
-	input_format = audio_format;
-	input_frame_size = input_format.GetFrameSize();
-
 	// Decide on an output format which has enough channels,
 	// and is otherwise identical
-	output_format = audio_format;
-	output_format.channels = min_output_channels;
+	out_audio_format.channels = out_channels;
 
 	// Precalculate this simple value, to speed up allocation later
-	output_frame_size = output_format.GetFrameSize();
-
-	return output_format;
+	output_frame_size = out_audio_format.GetFrameSize();
 }
 
-void
-RouteFilter::Close()
+Filter *
+PreparedRouteFilter::Open(AudioFormat &audio_format)
 {
-	output_buffer.Clear();
+	return new RouteFilter(audio_format, min_output_channels, sources);
 }
 
 ConstBuffer<void>
-RouteFilter::FilterPCM(ConstBuffer<void> src, gcc_unused Error &error)
+RouteFilter::FilterPCM(ConstBuffer<void> src)
 {
 	size_t number_of_frames = src.size / input_frame_size;
 
@@ -261,14 +243,13 @@ RouteFilter::FilterPCM(ConstBuffer<void> src, gcc_unused Error &error)
 	for (unsigned int s=0; s<number_of_frames; ++s) {
 
 		// Need to perform one copy per output channel
-		for (unsigned int c=0; c<min_output_channels; ++c) {
+		for (unsigned c = 0; c < out_audio_format.channels; ++c) {
 			if (sources[c] == -1 ||
 			    (unsigned)sources[c] >= input_format.channels) {
 				// No source for this destination output,
 				// give it zeroes as input
-				memset(chan_destination,
-					0x00,
-					bytes_per_frame_per_channel);
+				PcmSilence({chan_destination, bytes_per_frame_per_channel},
+					   input_format.format);
 			} else {
 				// Get the data from channel sources[c]
 				// and copy it to the output
@@ -291,7 +272,7 @@ RouteFilter::FilterPCM(ConstBuffer<void> src, gcc_unused Error &error)
 	return { result, result_size };
 }
 
-const struct filter_plugin route_filter_plugin = {
+const FilterPlugin route_filter_plugin = {
 	"route",
 	route_filter_init,
 };

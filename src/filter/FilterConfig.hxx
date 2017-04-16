@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -25,19 +25,19 @@
 #ifndef MPD_FILTER_CONFIG_HXX
 #define MPD_FILTER_CONFIG_HXX
 
-class Filter;
-class Error;
+class PreparedFilter;
 
 /**
  * Builds a filter chain from a configuration string on the form
  * "name1, name2, name3, ..." by looking up each name among the
  * configured filter sections.
+ *
+ * Throws std::runtime_error on error.
+ *
  * @param chain the chain to append filters on
  * @param spec the filter chain specification
- * @param error space to return an error description
- * @return true on success
  */
-bool
-filter_chain_parse(Filter &chain, const char *spec, Error &error);
+void
+filter_chain_parse(PreparedFilter &chain, const char *spec);
 
 #endif

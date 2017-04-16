@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -26,13 +26,14 @@
 class Path;
 class Mutex;
 class Cond;
-class Error;
 
 /**
  * Open a "local" file.  This is a wrapper for the input plugins
  * "file" and "archive".
+ *
+ * Throws std::runtime_error on error.
  */
 InputStreamPtr
-OpenLocalInputStream(Path path, Mutex &mutex, Cond &cond, Error &error);
+OpenLocalInputStream(Path path, Mutex &mutex, Cond &cond);
 
 #endif

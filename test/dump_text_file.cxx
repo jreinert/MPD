@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -18,12 +18,11 @@
  */
 
 #include "config.h"
-#include "ScopeIOThread.hxx"
+#include "event/Thread.hxx"
 #include "input/Init.hxx"
 #include "input/InputStream.hxx"
 #include "input/TextInputStream.hxx"
 #include "config/ConfigGlobal.hxx"
-#include "util/Error.hxx"
 #include "thread/Cond.hxx"
 #include "Log.hxx"
 
@@ -31,9 +30,33 @@
 #include "archive/ArchiveList.hxx"
 #endif
 
+#include <stdexcept>
+
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
+
+class GlobalInit {
+	EventThread io_thread;
+
+public:
+	GlobalInit() {
+		io_thread.Start();
+		config_global_init();
+#ifdef ENABLE_ARCHIVE
+		archive_plugin_init_all();
+#endif
+		input_stream_global_init(io_thread.GetEventLoop());
+	}
+
+	~GlobalInit() {
+		input_stream_global_finish();
+#ifdef ENABLE_ARCHIVE
+		archive_plugin_deinit_all();
+#endif
+		config_global_finish();
+	}
+};
 
 static void
 dump_text_file(TextInputStream &is)
@@ -51,24 +74,14 @@ dump_input_stream(InputStreamPtr &&is)
 		dump_text_file(tis);
 	}
 
-	is->Lock();
+	const std::lock_guard<Mutex> protect(is->mutex);
 
-	Error error;
-	if (!is->Check(error)) {
-		LogError(error);
-		is->Unlock();
-		return EXIT_FAILURE;
-	}
-
-	is->Unlock();
-
+	is->Check();
 	return 0;
 }
 
 int main(int argc, char **argv)
-{
-	int ret;
-
+try {
 	if (argc != 2) {
 		fprintf(stderr, "Usage: run_input URI\n");
 		return EXIT_FAILURE;
@@ -76,47 +89,16 @@ int main(int argc, char **argv)
 
 	/* initialize MPD */
 
-	config_global_init();
-
-	const ScopeIOThread io_thread;
-
-#ifdef ENABLE_ARCHIVE
-	archive_plugin_init_all();
-#endif
-
-	Error error;
-	if (!input_stream_global_init(error)) {
-		LogError(error);
-		return 2;
-	}
+	const GlobalInit init;
 
 	/* open the stream and dump it */
 
-	{
-		Mutex mutex;
-		Cond cond;
+	Mutex mutex;
+	Cond cond;
 
-		auto is = InputStream::OpenReady(argv[1], mutex, cond, error);
-		if (is) {
-			ret = dump_input_stream(std::move(is));
-		} else {
-			if (error.IsDefined())
-				LogError(error);
-			else
-				fprintf(stderr, "input_stream::Open() failed\n");
-			ret = EXIT_FAILURE;
-		}
-	}
-
-	/* deinitialize everything */
-
-	input_stream_global_finish();
-
-#ifdef ENABLE_ARCHIVE
-	archive_plugin_deinit_all();
-#endif
-
-	config_global_finish();
-
-	return ret;
+	auto is = InputStream::OpenReady(argv[1], mutex, cond);
+	return dump_input_stream(std::move(is));
+} catch (const std::exception &e) {
+	LogError(e);
+	return EXIT_FAILURE;
 }

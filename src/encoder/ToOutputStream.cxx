@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -29,7 +29,7 @@ EncoderToOutputStream(OutputStream &os, Encoder &encoder)
 		/* read from the encoder */
 
 		char buffer[32768];
-		size_t nbytes = encoder_read(&encoder, buffer, sizeof(buffer));
+		size_t nbytes = encoder.Read(buffer, sizeof(buffer));
 		if (nbytes == 0)
 			return;
 

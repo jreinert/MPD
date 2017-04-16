@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * Copyright (C) 2010-2011 Philipp 'ph3-der-loewe' Schafft
  * Copyright (C) 2010-2011 Hans-Kristian 'maister' Arntzen
  *
@@ -24,11 +24,11 @@
 #include "../Wrapper.hxx"
 #include "mixer/MixerList.hxx"
 #include "thread/Mutex.hxx"
-#include "util/Error.hxx"
 #include "util/Domain.hxx"
 #include "Log.hxx"
 
 #include <string>
+#include <stdexcept>
 
 /* libroar/services.h declares roar_service_stream::new - work around
    this C++ problem */
@@ -41,48 +41,62 @@ class RoarOutput {
 
 	AudioOutput base;
 
-	std::string host, name;
+	const std::string host, name;
 
 	roar_vs_t * vss;
-	int err;
-	int role;
+	int err = ROAR_ERROR_NONE;
+	const int role;
 	struct roar_connection con;
 	struct roar_audio_info info;
 	mutable Mutex mutex;
 	bool alive;
 
 public:
-	RoarOutput()
-		:base(roar_output_plugin),
-		 err(ROAR_ERROR_NONE) {}
+	RoarOutput(const ConfigBlock &block);
 
 	operator AudioOutput *() {
 		return &base;
 	}
 
-	bool Initialize(const ConfigBlock &block, Error &error) {
-		return base.Configure(block, error);
+	static RoarOutput *Create(EventLoop &, const ConfigBlock &block) {
+		return new RoarOutput(block);
 	}
 
-	void Configure(const ConfigBlock &block);
-
-	bool Open(AudioFormat &audio_format, Error &error);
+	void Open(AudioFormat &audio_format);
 	void Close();
 
 	void SendTag(const Tag &tag);
-	size_t Play(const void *chunk, size_t size, Error &error);
+	size_t Play(const void *chunk, size_t size);
 	void Cancel();
 
 	int GetVolume() const;
-	bool SetVolume(unsigned volume);
+	void SetVolume(unsigned volume);
 };
 
 static constexpr Domain roar_output_domain("roar_output");
 
+gcc_pure
+static int
+GetConfiguredRole(const ConfigBlock &block)
+{
+	const char *role = block.GetBlockValue("role");
+	return role != nullptr
+		? roar_str2role(role)
+		: ROAR_ROLE_MUSIC;
+}
+
+RoarOutput::RoarOutput(const ConfigBlock &block)
+	:base(roar_output_plugin, block),
+	 host(block.GetBlockValue("server", "")),
+	 name(block.GetBlockValue("name", "MPD")),
+	 role(GetConfiguredRole(block))
+{
+}
+
 inline int
 RoarOutput::GetVolume() const
 {
-	const ScopeLock protect(mutex);
+	const std::lock_guard<Mutex> protect(mutex);
 
 	if (vss == nullptr || !alive)
 		return -1;
@@ -90,7 +104,7 @@ RoarOutput::GetVolume() const
 	float l, r;
 	int error;
 	if (roar_vs_volume_get(vss, &l, &r, &error) < 0)
-		return -1;
+		throw std::runtime_error(roar_vs_strerr(error));
 
 	return (l + r) * 50;
 }
@@ -101,52 +115,26 @@ roar_output_get_volume(RoarOutput &roar)
 	return roar.GetVolume();
 }
 
-bool
+inline void
 RoarOutput::SetVolume(unsigned volume)
 {
 	assert(volume <= 100);
 
-	const ScopeLock protect(mutex);
+	const std::lock_guard<Mutex> protect(mutex);
 	if (vss == nullptr || !alive)
-		return false;
+		throw std::runtime_error("closed");
 
 	int error;
 	float level = volume / 100.0;
 
-	roar_vs_volume_mono(vss, level, &error);
-	return true;
+	if (roar_vs_volume_mono(vss, level, &error) < 0)
+		throw std::runtime_error(roar_vs_strerr(error));
 }
 
-bool
+void
 roar_output_set_volume(RoarOutput &roar, unsigned volume)
 {
-	return roar.SetVolume(volume);
-}
-
-inline void
-RoarOutput::Configure(const ConfigBlock &block)
-{
-	host = block.GetBlockValue("server", "");
-	name = block.GetBlockValue("name", "MPD");
-
-	const char *_role = block.GetBlockValue("role", "music");
-	role = _role != nullptr
-		? roar_str2role(_role)
-		: ROAR_ROLE_MUSIC;
-}
-
-static AudioOutput *
-roar_init(const ConfigBlock &block, Error &error)
-{
-	RoarOutput *self = new RoarOutput();
-
-	if (!self->Initialize(block, error)) {
-		delete self;
-		return nullptr;
-	}
-
-	self->Configure(block);
-	return *self;
+	roar.SetVolume(volume);
 }
 
 static void
@@ -184,42 +172,34 @@ roar_use_audio_format(struct roar_audio_info *info,
 	}
 }
 
-inline bool
-RoarOutput::Open(AudioFormat &audio_format, Error &error)
+inline void
+RoarOutput::Open(AudioFormat &audio_format)
 {
-	const ScopeLock protect(mutex);
+	const std::lock_guard<Mutex> protect(mutex);
 
 	if (roar_simple_connect(&con,
 				host.empty() ? nullptr : host.c_str(),
-				name.c_str()) < 0) {
-		error.Set(roar_output_domain,
-			  "Failed to connect to Roar server");
-		return false;
-	}
+				name.c_str()) < 0)
+		throw std::runtime_error("Failed to connect to Roar server");
 
 	vss = roar_vs_new_from_con(&con, &err);
 
-	if (vss == nullptr || err != ROAR_ERROR_NONE) {
-		error.Set(roar_output_domain, "Failed to connect to server");
-		return false;
-	}
+	if (vss == nullptr || err != ROAR_ERROR_NONE)
+		throw std::runtime_error("Failed to connect to server");
 
 	roar_use_audio_format(&info, audio_format);
 
-	if (roar_vs_stream(vss, &info, ROAR_DIR_PLAY, &err) < 0) {
-		error.Set(roar_output_domain, "Failed to start stream");
-		return false;
-	}
+	if (roar_vs_stream(vss, &info, ROAR_DIR_PLAY, &err) < 0)
+		throw std::runtime_error("Failed to start stream");
 
 	roar_vs_role(vss, role, &err);
 	alive = true;
-	return true;
 }
 
 inline void
 RoarOutput::Close()
 {
-	const ScopeLock protect(mutex);
+	const std::lock_guard<Mutex> protect(mutex);
 
 	alive = false;
 
@@ -232,7 +212,7 @@ RoarOutput::Close()
 inline void
 RoarOutput::Cancel()
 {
-	const ScopeLock protect(mutex);
+	const std::lock_guard<Mutex> protect(mutex);
 
 	if (vss == nullptr)
 		return;
@@ -258,18 +238,14 @@ RoarOutput::Cancel()
 }
 
 inline size_t
-RoarOutput::Play(const void *chunk, size_t size, Error &error)
+RoarOutput::Play(const void *chunk, size_t size)
 {
-	if (vss == nullptr) {
-		error.Set(roar_output_domain, "Connection is invalid");
-		return 0;
-	}
+	if (vss == nullptr)
+		throw std::runtime_error("Connection is invalid");
 
 	ssize_t nbytes = roar_vs_write(vss, chunk, size, &err);
-	if (nbytes <= 0) {
-		error.Set(roar_output_domain, "Failed to play data");
-		return 0;
-	}
+	if (nbytes <= 0)
+		throw std::runtime_error("Failed to play data");
 
 	return nbytes;
 }
@@ -328,7 +304,7 @@ RoarOutput::SendTag(const Tag &tag)
 	if (vss == nullptr)
 		return;
 
-	const ScopeLock protect(mutex);
+	const std::lock_guard<Mutex> protect(mutex);
 
 	size_t cnt = 0;
 	struct roar_keyval vals[32];
@@ -370,26 +346,19 @@ RoarOutput::SendTag(const Tag &tag)
 	roar_vs_meta(vss, vals, cnt, &(err));
 }
 
-static void
-roar_send_tag(AudioOutput *ao, const Tag &meta)
-{
-	RoarOutput *self = (RoarOutput *)ao;
-	self->SendTag(meta);
-}
-
 typedef AudioOutputWrapper<RoarOutput> Wrapper;
 
 const struct AudioOutputPlugin roar_output_plugin = {
 	"roar",
 	nullptr,
-	roar_init,
+	&Wrapper::Init,
 	&Wrapper::Finish,
 	nullptr,
 	nullptr,
 	&Wrapper::Open,
 	&Wrapper::Close,
 	nullptr,
-	roar_send_tag,
+	&Wrapper::SendTag,
 	&Wrapper::Play,
 	nullptr,
 	&Wrapper::Cancel,

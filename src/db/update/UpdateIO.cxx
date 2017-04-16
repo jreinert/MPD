@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -19,45 +19,48 @@
 
 #include "config.h" /* must be first for large file support */
 #include "UpdateIO.hxx"
-#include "UpdateDomain.hxx"
 #include "db/plugins/simple/Directory.hxx"
 #include "storage/FileInfo.hxx"
 #include "storage/StorageInterface.hxx"
 #include "fs/Traits.hxx"
 #include "fs/FileSystem.hxx"
 #include "fs/AllocatedPath.hxx"
-#include "util/Error.hxx"
 #include "Log.hxx"
 
+#include <stdexcept>
+
 #include <errno.h>
-#include <unistd.h>
 
 bool
 GetInfo(Storage &storage, const char *uri_utf8, StorageFileInfo &info)
-{
-	Error error;
-	bool success = storage.GetInfo(uri_utf8, true, info, error);
-	if (!success)
-		LogError(error);
-	return success;
+try {
+	info = storage.GetInfo(uri_utf8, true);
+	return true;
+} catch (const std::runtime_error &e) {
+	LogError(e);
+	return false;
 }
 
 bool
 GetInfo(StorageDirectoryReader &reader, StorageFileInfo &info)
-{
-	Error error;
-	bool success = reader.GetInfo(true, info, error);
-	if (!success)
-		LogError(error);
-	return success;
+try {
+	info = reader.GetInfo(true);
+	return true;
+} catch (const std::runtime_error &e) {
+	LogError(e);
+	return false;
 }
 
 bool
 DirectoryExists(Storage &storage, const Directory &directory)
 {
 	StorageFileInfo info;
-	if (!storage.GetInfo(directory.GetPath(), true, info, IgnoreError()))
+
+	try {
+		info = storage.GetInfo(directory.GetPath(), true);
+	} catch (const std::runtime_error &) {
 		return false;
+	}
 
 	return directory.device == DEVICE_INARCHIVE ||
 		directory.device == DEVICE_CONTAINER
@@ -65,23 +68,23 @@ DirectoryExists(Storage &storage, const Directory &directory)
 		: info.IsDirectory();
 }
 
-static bool
+static StorageFileInfo
 GetDirectoryChildInfo(Storage &storage, const Directory &directory,
-		      const char *name_utf8, StorageFileInfo &info, Error &error)
+		      const char *name_utf8)
 {
 	const auto uri_utf8 = PathTraitsUTF8::Build(directory.GetPath(),
 						    name_utf8);
-	return storage.GetInfo(uri_utf8.c_str(), true, info, error);
+	return storage.GetInfo(uri_utf8.c_str(), true);
 }
 
 bool
 directory_child_is_regular(Storage &storage, const Directory &directory,
 			   const char *name_utf8)
-{
-	StorageFileInfo info;
-	return GetDirectoryChildInfo(storage, directory, name_utf8, info,
-				     IgnoreError()) &&
-		info.IsRegular();
+try {
+	return GetDirectoryChildInfo(storage, directory, name_utf8)
+		.IsRegular();
+} catch (const std::runtime_error &) {
+	return false;
 }
 
 bool

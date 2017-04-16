@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -20,86 +20,42 @@
 #include "config.h"
 #include "NullEncoderPlugin.hxx"
 #include "../EncoderAPI.hxx"
-#include "util/Manual.hxx"
 #include "util/DynamicFifoBuffer.hxx"
 #include "Compiler.h"
 
-#include <assert.h>
+class NullEncoder final : public Encoder {
+	DynamicFifoBuffer<uint8_t> buffer;
 
-struct NullEncoder final {
-	Encoder encoder;
-
-	Manual<DynamicFifoBuffer<uint8_t>> buffer;
-
+public:
 	NullEncoder()
-		:encoder(null_encoder_plugin) {}
+		:Encoder(false),
+		 buffer(8192) {}
+
+	/* virtual methods from class Encoder */
+	void Write(const void *data, size_t length) override {
+		buffer.Append((const uint8_t *)data, length);
+	}
+
+	size_t Read(void *dest, size_t length) override {
+		return buffer.Read((uint8_t *)dest, length);
+	}
 };
 
-static Encoder *
-null_encoder_init(gcc_unused const ConfigBlock &block,
-		  gcc_unused Error &error)
+class PreparedNullEncoder final : public PreparedEncoder {
+public:
+	/* virtual methods from class PreparedEncoder */
+	Encoder *Open(AudioFormat &) override {
+		return new NullEncoder();
+	}
+};
+
+static PreparedEncoder *
+null_encoder_init(gcc_unused const ConfigBlock &block)
 {
-	NullEncoder *encoder = new NullEncoder();
-	return &encoder->encoder;
-}
-
-static void
-null_encoder_finish(Encoder *_encoder)
-{
-	NullEncoder *encoder = (NullEncoder *)_encoder;
-
-	delete encoder;
-}
-
-static void
-null_encoder_close(Encoder *_encoder)
-{
-	NullEncoder *encoder = (NullEncoder *)_encoder;
-
-	encoder->buffer.Destruct();
-}
-
-
-static bool
-null_encoder_open(Encoder *_encoder,
-		  gcc_unused AudioFormat &audio_format,
-		  gcc_unused Error &error)
-{
-	NullEncoder *encoder = (NullEncoder *)_encoder;
-	encoder->buffer.Construct(8192);
-	return true;
-}
-
-static bool
-null_encoder_write(Encoder *_encoder,
-		   const void *data, size_t length,
-		   gcc_unused Error &error)
-{
-	NullEncoder *encoder = (NullEncoder *)_encoder;
-
-	encoder->buffer->Append((const uint8_t *)data, length);
-	return length;
-}
-
-static size_t
-null_encoder_read(Encoder *_encoder, void *dest, size_t length)
-{
-	NullEncoder *encoder = (NullEncoder *)_encoder;
-
-	return encoder->buffer->Read((uint8_t *)dest, length);
+	return new PreparedNullEncoder();
 }
 
 const EncoderPlugin null_encoder_plugin = {
 	"null",
 	null_encoder_init,
-	null_encoder_finish,
-	null_encoder_open,
-	null_encoder_close,
-	nullptr,
-	nullptr,
-	nullptr,
-	nullptr,
-	null_encoder_write,
-	null_encoder_read,
-	nullptr,
 };

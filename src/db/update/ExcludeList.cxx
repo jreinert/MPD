@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -30,9 +30,10 @@
 #include "system/Error.hxx"
 #include "Log.hxx"
 
+#include <stdexcept>
+
 #include <assert.h>
 #include <string.h>
-#include <errno.h>
 
 bool
 ExcludeList::LoadFile(Path path_fs)
@@ -79,9 +80,13 @@ ExcludeList::Check(Path name_fs) const
 		}
 	}
 
-	for (const auto &i : patterns)
-		if (i.Check(NarrowPath(name_fs).c_str()))
-			return true;
+	for (const auto &i : patterns) {
+		try {
+			if (i.Check(NarrowPath(name_fs).c_str()))
+				return true;
+		} catch (const std::runtime_error &) {
+		}
+	}
 #else
 	/* not implemented */
 	(void)name_fs;

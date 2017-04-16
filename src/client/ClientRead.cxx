@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -34,7 +34,7 @@ Client::OnSocketInput(void *data, size_t length)
 	if (newline == nullptr)
 		return InputResult::MORE;
 
-	TimeoutMonitor::ScheduleSeconds(client_timeout);
+	TimeoutMonitor::Schedule(client_timeout);
 
 	BufferedSocket::ConsumeInput(newline + 1 - p);
 
@@ -52,8 +52,8 @@ Client::OnSocketInput(void *data, size_t length)
 		break;
 
 	case CommandResult::KILL:
+		partition->instance.Shutdown();
 		Close();
-		partition.instance.event_loop->Break();
 		return InputResult::CLOSED;
 
 	case CommandResult::FINISH:

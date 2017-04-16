@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -79,13 +79,13 @@ IcyInputStream::ReadTag()
 }
 
 size_t
-IcyInputStream::Read(void *ptr, size_t read_size, Error &error)
+IcyInputStream::Read(void *ptr, size_t read_size)
 {
 	if (!IsEnabled())
-		return ProxyInputStream::Read(ptr, read_size, error);
+		return ProxyInputStream::Read(ptr, read_size);
 
 	while (true) {
-		size_t nbytes = ProxyInputStream::Read(ptr, read_size, error);
+		size_t nbytes = ProxyInputStream::Read(ptr, read_size);
 		if (nbytes == 0)
 			return 0;
 

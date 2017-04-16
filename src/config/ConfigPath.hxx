@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -21,9 +21,11 @@
 #define MPD_CONFIG_PATH_HXX
 
 class AllocatedPath;
-class Error;
 
+/**
+ * Throws #std::runtime_error on error.
+ */
 AllocatedPath
-ParsePath(const char *path, Error &error);
+ParsePath(const char *path);
 
 #endif

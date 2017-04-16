@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -21,7 +21,6 @@
 #define PCM_CONVERT_HXX
 
 #include "check.h"
-#include "PcmBuffer.hxx"
 #include "FormatConverter.hxx"
 #include "ChannelsConverter.hxx"
 #include "GlueResampler.hxx"
@@ -31,11 +30,7 @@
 #include "PcmDsd.hxx"
 #endif
 
-#include <stddef.h>
-
 template<typename T> struct ConstBuffer;
-class Error;
-class Domain;
 
 /**
  * This object is statically allocated (within another struct), and
@@ -61,9 +56,10 @@ public:
 
 	/**
 	 * Prepare the object.  Call Close() when done.
+	 *
+	 * Throws std::runtime_error on error.
 	 */
-	bool Open(AudioFormat _src_format, AudioFormat _dest_format,
-		  Error &error);
+	void Open(AudioFormat _src_format, AudioFormat _dest_format);
 
 	/**
 	 * Close the object after it was prepared with Open().  After
@@ -72,16 +68,22 @@ public:
 	void Close();
 
 	/**
+	 * Reset the filter's state, e.g. drop/flush buffers.
+	 */
+	void Reset();
+
+	/**
 	 * Converts PCM data between two audio formats.
 	 *
+	 * Throws std::runtime_error on error.
+	 *
 	 * @param src the source PCM buffer
-	 * @param error location to store the error occurring
-	 * @return the destination buffer, or nullptr on error
+	 * @return the destination buffer
 	 */
-	ConstBuffer<void> Convert(ConstBuffer<void> src, Error &error);
+	ConstBuffer<void> Convert(ConstBuffer<void> src);
 };
 
-bool
-pcm_convert_global_init(Error &error);
+void
+pcm_convert_global_init();
 
 #endif

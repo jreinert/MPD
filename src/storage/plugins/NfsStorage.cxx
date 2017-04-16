@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -24,7 +24,6 @@
 #include "storage/FileInfo.hxx"
 #include "storage/MemoryDirectoryReader.hxx"
 #include "lib/nfs/Blocking.hxx"
-#include "lib/nfs/Domain.hxx"
 #include "lib/nfs/Base.hxx"
 #include "lib/nfs/Lease.hxx"
 #include "lib/nfs/Connection.hxx"
@@ -36,7 +35,6 @@
 #include "event/Call.hxx"
 #include "event/DeferredMonitor.hxx"
 #include "event/TimeoutMonitor.hxx"
-#include "util/Error.hxx"
 #include "util/StringCompare.hxx"
 
 extern "C" {
@@ -66,7 +64,7 @@ class NfsStorage final
 	Mutex mutex;
 	Cond cond;
 	State state;
-	Error last_error;
+	std::exception_ptr last_exception;
 
 public:
 	NfsStorage(EventLoop &_loop, const char *_base,
@@ -76,7 +74,7 @@ public:
 		 server(std::move(_server)),
 		 export_name(std::move(_export_name)),
 		 state(State::INITIAL) {
-		nfs_init();
+		nfs_init(_loop);
 	}
 
 	~NfsStorage() {
@@ -85,11 +83,9 @@ public:
 	}
 
 	/* virtual methods from class Storage */
-	bool GetInfo(const char *uri_utf8, bool follow, StorageFileInfo &info,
-		     Error &error) override;
+	StorageFileInfo GetInfo(const char *uri_utf8, bool follow) override;
 
-	StorageDirectoryReader *OpenDirectory(const char *uri_utf8,
-					      Error &error) override;
+	StorageDirectoryReader *OpenDirectory(const char *uri_utf8) override;
 
 	std::string MapUTF8(const char *uri_utf8) const override;
 
@@ -102,18 +98,18 @@ public:
 		SetState(State::READY);
 	}
 
-	void OnNfsConnectionFailed(gcc_unused const Error &error) final {
+	void OnNfsConnectionFailed(std::exception_ptr e) final {
 		assert(state == State::CONNECTING);
 
-		SetState(State::DELAY, error);
-		TimeoutMonitor::ScheduleSeconds(60);
+		SetState(State::DELAY, std::move(e));
+		TimeoutMonitor::Schedule(std::chrono::minutes(1));
 	}
 
-	void OnNfsConnectionDisconnected(gcc_unused const Error &error) final {
+	void OnNfsConnectionDisconnected(std::exception_ptr e) final {
 		assert(state == State::READY);
 
-		SetState(State::DELAY, error);
-		TimeoutMonitor::ScheduleSeconds(5);
+		SetState(State::DELAY, std::move(e));
+		TimeoutMonitor::Schedule(std::chrono::seconds(5));
 	}
 
 	/* virtual methods from DeferredMonitor */
@@ -137,18 +133,17 @@ private:
 	void SetState(State _state) {
 		assert(GetEventLoop().IsInside());
 
-		const ScopeLock protect(mutex);
+		const std::lock_guard<Mutex> protect(mutex);
 		state = _state;
 		cond.broadcast();
 	}
 
-	void SetState(State _state, const Error &error) {
+	void SetState(State _state, std::exception_ptr &&e) {
 		assert(GetEventLoop().IsInside());
 
-		const ScopeLock protect(mutex);
+		const std::lock_guard<Mutex> protect(mutex);
 		state = _state;
-		last_error.Clear();
-		last_error.Set(error);
+		last_exception = std::move(e);
 		cond.broadcast();
 	}
 
@@ -168,8 +163,8 @@ private:
 			Connect();
 	}
 
-	bool WaitConnected(Error &error) {
-		const ScopeLock protect(mutex);
+	void WaitConnected() {
+		const std::lock_guard<Mutex> protect(mutex);
 
 		while (true) {
 			switch (state) {
@@ -184,12 +179,11 @@ private:
 
 			case State::CONNECTING:
 			case State::READY:
-				return true;
+				return;
 
 			case State::DELAY:
-				assert(last_error.IsDefined());
-				error.Set(last_error);
-				return false;
+				assert(last_exception);
+				std::rethrow_exception(last_exception);
 			}
 		}
 	}
@@ -217,7 +211,7 @@ private:
 };
 
 static std::string
-UriToNfsPath(const char *_uri_utf8, Error &error)
+UriToNfsPath(const char *_uri_utf8)
 {
 	assert(_uri_utf8 != nullptr);
 
@@ -225,7 +219,7 @@ UriToNfsPath(const char *_uri_utf8, Error &error)
 	std::string uri_utf8("/");
 	uri_utf8.append(_uri_utf8);
 
-	return AllocatedPath::FromUTF8(uri_utf8.c_str(), error).Steal();
+	return AllocatedPath::FromUTF8Throw(uri_utf8.c_str()).Steal();
 }
 
 std::string
@@ -256,23 +250,26 @@ Copy(StorageFileInfo &info, const struct stat &st)
 		info.type = StorageFileInfo::Type::OTHER;
 
 	info.size = st.st_size;
-	info.mtime = st.st_mtime;
+	info.mtime = std::chrono::system_clock::from_time_t(st.st_mtime);
 	info.device = st.st_dev;
 	info.inode = st.st_ino;
 }
 
 class NfsGetInfoOperation final : public BlockingNfsOperation {
 	const char *const path;
-	StorageFileInfo &info;
+	StorageFileInfo info;
 
 public:
-	NfsGetInfoOperation(NfsConnection &_connection, const char *_path,
-			    StorageFileInfo &_info)
-		:BlockingNfsOperation(_connection), path(_path), info(_info) {}
+	NfsGetInfoOperation(NfsConnection &_connection, const char *_path)
+		:BlockingNfsOperation(_connection), path(_path) {}
+
+	const StorageFileInfo &GetInfo() const {
+		return info;
+	}
 
 protected:
-	bool Start(Error &_error) override {
-		return connection.Stat(path, *this, _error);
+	void Start() override {
+		connection.Stat(path, *this);
 	}
 
 	void HandleResult(gcc_unused unsigned status, void *data) override {
@@ -280,19 +277,16 @@ protected:
 	}
 };
 
-bool
-NfsStorage::GetInfo(const char *uri_utf8, gcc_unused bool follow,
-		    StorageFileInfo &info, Error &error)
+StorageFileInfo
+NfsStorage::GetInfo(const char *uri_utf8, gcc_unused bool follow)
 {
-	const std::string path = UriToNfsPath(uri_utf8, error);
-	if (path.empty())
-		return false;
+	const std::string path = UriToNfsPath(uri_utf8);
 
-	if (!WaitConnected(error))
-		return false;
+	WaitConnected();
 
-	NfsGetInfoOperation operation(*connection, path.c_str(), info);
-	return operation.Run(error);
+	NfsGetInfoOperation operation(*connection, path.c_str());
+	operation.Run();
+	return operation.GetInfo();
 }
 
 gcc_pure
@@ -322,7 +316,7 @@ Copy(StorageFileInfo &info, const struct nfsdirent &ent)
 	}
 
 	info.size = ent.size;
-	info.mtime = ent.mtime.tv_sec;
+	info.mtime = std::chrono::system_clock::from_time_t(ent.mtime.tv_sec);
 	info.device = 0;
 	info.inode = ent.inode;
 }
@@ -342,8 +336,8 @@ public:
 	}
 
 protected:
-	bool Start(Error &_error) override {
-		return connection.OpenDirectory(path, *this, _error);
+	void Start() override {
+		connection.OpenDirectory(path, *this);
 	}
 
 	void HandleResult(gcc_unused unsigned status, void *data) override {
@@ -380,36 +374,29 @@ NfsListDirectoryOperation::CollectEntries(struct nfsdir *dir)
 }
 
 StorageDirectoryReader *
-NfsStorage::OpenDirectory(const char *uri_utf8, Error &error)
+NfsStorage::OpenDirectory(const char *uri_utf8)
 {
-	const std::string path = UriToNfsPath(uri_utf8, error);
-	if (path.empty())
-		return nullptr;
+	const std::string path = UriToNfsPath(uri_utf8);
 
-	if (!WaitConnected(error))
-		return nullptr;
+	WaitConnected();
 
 	NfsListDirectoryOperation operation(*connection, path.c_str());
-	if (!operation.Run(error))
-		return nullptr;
+	operation.Run();
 
 	return operation.ToReader();
 }
 
 static Storage *
-CreateNfsStorageURI(EventLoop &event_loop, const char *base,
-		    Error &error)
+CreateNfsStorageURI(EventLoop &event_loop, const char *base)
 {
-	if (memcmp(base, "nfs://", 6) != 0)
+	if (strncmp(base, "nfs://", 6) != 0)
 		return nullptr;
 
 	const char *p = base + 6;
 
 	const char *mount = strchr(p, '/');
-	if (mount == nullptr) {
-		error.Set(nfs_domain, "Malformed nfs:// URI");
-		return nullptr;
-	}
+	if (mount == nullptr)
+		throw std::runtime_error("Malformed nfs:// URI");
 
 	const std::string server(p, mount);
 

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -26,11 +26,9 @@
 #include "protocol/Ack.hxx"
 #include "client/Client.hxx"
 #include "client/Response.hxx"
-#include "util/ConstBuffer.hxx"
 #include "util/CharUtil.hxx"
 #include "util/UriUtil.hxx"
-#include "util/Error.hxx"
-#include "tag/TagHandler.hxx"
+#include "tag/Handler.hxx"
 #include "tag/Generic.hxx"
 #include "TagStream.hxx"
 #include "TagFile.hxx"
@@ -42,12 +40,11 @@
 #include "TimePrint.hxx"
 
 #include <assert.h>
-#include <sys/stat.h>
 #include <inttypes.h> /* for PRIu64 */
 
 gcc_pure
 static bool
-SkipNameFS(PathTraitsFS::const_pointer name_fs)
+SkipNameFS(PathTraitsFS::const_pointer_type name_fs)
 {
 	return name_fs[0] == '.' &&
 		(name_fs[1] == 0 ||
@@ -218,16 +215,12 @@ handle_read_comments(Client &client, Request args, Response &r)
 
 	const char *const uri = args.front();
 
-	Error error;
-	const auto located_uri = LocateUri(uri, &client,
+	const auto located_uri = LocateUri(uri, &client
 #ifdef ENABLE_DATABASE
-					   nullptr,
+					   , nullptr
 #endif
-					   error);
+					   );
 	switch (located_uri.type) {
-	case LocatedUri::Type::UNKNOWN:
-		return print_error(r, error);
-
 	case LocatedUri::Type::ABSOLUTE:
 		return read_stream_comments(r, located_uri.canonical_uri);
 

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -21,17 +21,15 @@
 #define MPD_DB_UNIQUE_TAGS_HXX
 
 #include "Visitor.hxx"
-#include "tag/TagType.h"
-#include "tag/Mask.hxx"
+#include "tag/Type.h"
 
-class Error;
+class TagMask;
 class Database;
 struct DatabaseSelection;
 
-bool
+void
 VisitUniqueTags(const Database &db, const DatabaseSelection &selection,
-		TagType tag_type, tag_mask_t group_mask,
-		VisitTag visit_tag,
-		Error &error);
+		TagType tag_type, TagMask group_mask,
+		VisitTag visit_tag);
 
 #endif

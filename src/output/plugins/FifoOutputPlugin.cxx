@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -19,15 +19,14 @@
 
 #include "config.h"
 #include "FifoOutputPlugin.hxx"
-#include "config/ConfigError.hxx"
 #include "../OutputAPI.hxx"
 #include "../Wrapper.hxx"
 #include "../Timer.hxx"
 #include "fs/AllocatedPath.hxx"
 #include "fs/FileSystem.hxx"
 #include "fs/FileInfo.hxx"
-#include "util/Error.hxx"
 #include "util/Domain.hxx"
+#include "util/RuntimeError.hxx"
 #include "Log.hxx"
 #include "open.h"
 
@@ -40,46 +39,52 @@ class FifoOutput {
 
 	AudioOutput base;
 
-	AllocatedPath path;
+	const AllocatedPath path;
 	std::string path_utf8;
 
-	int input;
-	int output;
-	bool created;
+	int input = -1;
+	int output = -1;
+	bool created = false;
 	Timer *timer;
 
 public:
-	FifoOutput()
-		:base(fifo_output_plugin),
-		 path(AllocatedPath::Null()), input(-1), output(-1),
-		 created(false) {}
+	FifoOutput(const ConfigBlock &block);
 
 	~FifoOutput() {
 		CloseFifo();
 	}
 
-	bool Initialize(const ConfigBlock &block, Error &error) {
-		return base.Configure(block, error);
-	}
+	static FifoOutput *Create(EventLoop &event_loop,
+				  const ConfigBlock &block);
 
-	static FifoOutput *Create(const ConfigBlock &block, Error &error);
-
-	bool Create(Error &error);
-	bool Check(Error &error);
+	void Create();
+	void Check();
 	void Delete();
 
-	bool OpenFifo(Error &error);
+	void OpenFifo();
 	void CloseFifo();
 
-	bool Open(AudioFormat &audio_format, Error &error);
+	void Open(AudioFormat &audio_format);
 	void Close();
 
-	unsigned Delay() const;
-	size_t Play(const void *chunk, size_t size, Error &error);
+	std::chrono::steady_clock::duration Delay() const;
+	size_t Play(const void *chunk, size_t size);
 	void Cancel();
 };
 
 static constexpr Domain fifo_output_domain("fifo_output");
+
+FifoOutput::FifoOutput(const ConfigBlock &block)
+	:base(fifo_output_plugin, block),
+	 path(block.GetPath("path"))
+{
+	if (path.IsNull())
+		throw std::runtime_error("No \"path\" parameter specified");
+
+	path_utf8 = path.ToUTF8();
+
+	OpenFifo();
+}
 
 inline void
 FifoOutput::Delete()
@@ -87,10 +92,10 @@ FifoOutput::Delete()
 	FormatDebug(fifo_output_domain,
 		    "Removing FIFO \"%s\"", path_utf8.c_str());
 
-	if (!RemoveFile(path)) {
-		FormatErrno(fifo_output_domain,
-			    "Could not remove FIFO \"%s\"",
-			    path_utf8.c_str());
+	try {
+		RemoveFile(path);
+	} catch (const std::runtime_error &e) {
+		LogError(e, "Could not remove FIFO");
 		return;
 	}
 
@@ -115,104 +120,65 @@ FifoOutput::CloseFifo()
 		Delete();
 }
 
-inline bool
-FifoOutput::Create(Error &error)
+inline void
+FifoOutput::Create()
 {
-	if (!MakeFifo(path, 0666)) {
-		error.FormatErrno("Couldn't create FIFO \"%s\"",
+	if (!MakeFifo(path, 0666))
+		throw FormatErrno("Couldn't create FIFO \"%s\"",
 				  path_utf8.c_str());
-		return false;
-	}
 
 	created = true;
-	return true;
 }
 
-inline bool
-FifoOutput::Check(Error &error)
+inline void
+FifoOutput::Check()
 {
 	struct stat st;
 	if (!StatFile(path, st)) {
 		if (errno == ENOENT) {
 			/* Path doesn't exist */
-			return Create(error);
+			Create();
+			return;
 		}
 
-		error.FormatErrno("Failed to stat FIFO \"%s\"",
+		throw FormatErrno("Failed to stat FIFO \"%s\"",
 				  path_utf8.c_str());
-		return false;
 	}
 
-	if (!S_ISFIFO(st.st_mode)) {
-		error.Format(fifo_output_domain,
-			     "\"%s\" already exists, but is not a FIFO",
-			     path_utf8.c_str());
-		return false;
-	}
-
-	return true;
+	if (!S_ISFIFO(st.st_mode))
+		throw FormatRuntimeError("\"%s\" already exists, but is not a FIFO",
+					 path_utf8.c_str());
 }
 
-inline bool
-FifoOutput::OpenFifo(Error &error)
-{
-	if (!Check(error))
-		return false;
+inline void
+FifoOutput::OpenFifo()
+try {
+	Check();
 
 	input = OpenFile(path, O_RDONLY|O_NONBLOCK|O_BINARY, 0);
-	if (input < 0) {
-		error.FormatErrno("Could not open FIFO \"%s\" for reading",
+	if (input < 0)
+		throw FormatErrno("Could not open FIFO \"%s\" for reading",
 				  path_utf8.c_str());
-		CloseFifo();
-		return false;
-	}
 
 	output = OpenFile(path, O_WRONLY|O_NONBLOCK|O_BINARY, 0);
-	if (output < 0) {
-		error.FormatErrno("Could not open FIFO \"%s\" for writing",
+	if (output < 0)
+		throw FormatErrno("Could not open FIFO \"%s\" for writing",
 				  path_utf8.c_str());
-		CloseFifo();
-		return false;
-	}
-
-	return true;
+} catch (...) {
+	CloseFifo();
+	throw;
 }
 
 inline FifoOutput *
-FifoOutput::Create(const ConfigBlock &block, Error &error)
+FifoOutput::Create(EventLoop &, const ConfigBlock &block)
 {
-	FifoOutput *fd = new FifoOutput();
-
-	fd->path = block.GetBlockPath("path", error);
-	if (fd->path.IsNull()) {
-		delete fd;
-
-		if (!error.IsDefined())
-			error.Set(config_domain,
-				  "No \"path\" parameter specified");
-		return nullptr;
-	}
-
-	fd->path_utf8 = fd->path.ToUTF8();
-
-	if (!fd->Initialize(block, error)) {
-		delete fd;
-		return nullptr;
-	}
-
-	if (!fd->OpenFifo(error)) {
-		delete fd;
-		return nullptr;
-	}
-
-	return fd;
+	return new FifoOutput(block);
 }
 
-bool
-FifoOutput::Open(AudioFormat &audio_format, gcc_unused Error &error)
+void
+FifoOutput::Open(AudioFormat &audio_format)
 {
 	timer = new Timer(audio_format);
-	return true;
 }
 
 void
@@ -239,16 +205,16 @@ FifoOutput::Cancel()
 	}
 }
 
-inline unsigned
+inline std::chrono::steady_clock::duration
 FifoOutput::Delay() const
 {
 	return timer->IsStarted()
 		? timer->GetDelay()
-		: 0;
+		: std::chrono::steady_clock::duration::zero();
 }
 
 inline size_t
-FifoOutput::Play(const void *chunk, size_t size, Error &error)
+FifoOutput::Play(const void *chunk, size_t size)
 {
 	if (!timer->IsStarted())
 		timer->Start();
@@ -269,9 +235,8 @@ FifoOutput::Play(const void *chunk, size_t size, Error &error)
 				continue;
 			}
 
-			error.FormatErrno("Failed to write to FIFO %s",
+			throw FormatErrno("Failed to write to FIFO %s",
 					  path_utf8.c_str());
-			return 0;
 		}
 	}
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -22,41 +22,44 @@
 #include "Partition.hxx"
 #include "Idle.hxx"
 #include "Stats.hxx"
-#include "util/Error.hxx"
 
 #ifdef ENABLE_DATABASE
 #include "db/DatabaseError.hxx"
-#include "db/LightSong.hxx"
 
 #ifdef ENABLE_SQLITE
 #include "sticker/StickerDatabase.hxx"
 #include "sticker/SongSticker.hxx"
 #endif
-
-Database *
-Instance::GetDatabase(Error &error)
-{
-	if (database == nullptr)
-		error.Set(db_domain, int(DatabaseErrorCode::DISABLED),
-			  "No database");
-	return database;
-}
-
 #endif
 
-void
-Instance::TagModified()
+#include <stdexcept>
+
+Instance::Instance()
+	:idle_monitor(event_loop, BIND_THIS_METHOD(OnIdle))
 {
-	partition->TagModified();
 }
 
-void
-Instance::SyncWithPlayer()
+Partition *
+Instance::FindPartition(const char *name)
 {
-	partition->SyncWithPlayer();
+	for (auto &partition : partitions)
+		if (partition.name == name)
+			return &partition;
+
+	return nullptr;
 }
 
 #ifdef ENABLE_DATABASE
+
+const Database &
+Instance::GetDatabaseOrThrow() const
+{
+	if (database == nullptr)
+		throw DatabaseError(DatabaseErrorCode::DISABLED,
+				    "No database");
+
+	return *database;
+}
 
 void
 Instance::OnDatabaseModified()
@@ -66,23 +69,28 @@ Instance::OnDatabaseModified()
 	/* propagate the change to all subsystems */
 
 	stats_invalidate();
-	partition->DatabaseModified(*database);
-	idle_add(IDLE_DATABASE);
+
+	for (auto &partition : partitions)
+		partition.DatabaseModified(*database);
 }
 
 void
-Instance::OnDatabaseSongRemoved(const LightSong &song)
+Instance::OnDatabaseSongRemoved(const char *uri)
 {
 	assert(database != nullptr);
 
 #ifdef ENABLE_SQLITE
 	/* if the song has a sticker, remove it */
-	if (sticker_enabled())
-		sticker_song_delete(song, IgnoreError());
+	if (sticker_enabled()) {
+		try {
+			sticker_song_delete(uri);
+		} catch (const std::runtime_error &) {
+		}
+	}
 #endif
 
-	const auto uri = song.GetURI();
-	partition->DeleteSong(uri.c_str());
+	for (auto &partition : partitions)
+		partition.StaleSong(uri);
 }
 
 #endif
@@ -92,13 +100,15 @@ Instance::OnDatabaseSongRemoved(const LightSong &song)
 void
 Instance::FoundNeighbor(gcc_unused const NeighborInfo &info)
 {
-	idle_add(IDLE_NEIGHBOR);
+	for (auto &partition : partitions)
+		partition.EmitIdle(IDLE_NEIGHBOR);
 }
 
 void
 Instance::LostNeighbor(gcc_unused const NeighborInfo &info)
 {
-	idle_add(IDLE_NEIGHBOR);
+	for (auto &partition : partitions)
+		partition.EmitIdle(IDLE_NEIGHBOR);
 }
 
 #endif

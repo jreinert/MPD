@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -20,7 +20,7 @@
 #ifndef MPD_ZLIB_ERROR_HXX
 #define MPD_ZLIB_ERROR_HXX
 
-#include <stdexcept>
+#include <exception>
 
 class ZlibError final : public std::exception {
 	int code;

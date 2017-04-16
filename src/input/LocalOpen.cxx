@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -27,7 +27,7 @@
 #endif
 
 #include "fs/Path.hxx"
-#include "util/Error.hxx"
+#include "system/Error.hxx"
 
 #include <assert.h>
 
@@ -36,20 +36,24 @@
 #endif
 
 InputStreamPtr
-OpenLocalInputStream(Path path, Mutex &mutex, Cond &cond, Error &error)
+OpenLocalInputStream(Path path, Mutex &mutex, Cond &cond)
 {
-	assert(!error.IsDefined());
+	InputStreamPtr is;
 
-	InputStreamPtr is(OpenFileInputStream(path, mutex, cond, error));
 #ifdef ENABLE_ARCHIVE
-	if (is == nullptr && error.IsDomain(errno_domain) &&
-	    error.GetCode() == ENOTDIR) {
-		/* ENOTDIR means this may be a path inside an archive
-		   file */
-		Error error2;
-		is.reset(OpenArchiveInputStream(path, mutex, cond, error2));
-		if (is == nullptr && error2.IsDefined())
-			error = std::move(error2);
+	try {
+#endif
+		is = OpenFileInputStream(path, mutex, cond);
+#ifdef ENABLE_ARCHIVE
+	} catch (const std::system_error &e) {
+		if (IsPathNotFound(e)) {
+			/* ENOTDIR means this may be a path inside an archive
+			   file */
+			is = OpenArchiveInputStream(path, mutex, cond);
+			if (!is)
+				throw;
+		} else
+			throw;
 	}
 #endif
 

@@ -1,9 +1,9 @@
 AC_PREREQ(2.60)
 
-AC_INIT(mpd, 0.20, musicpd-dev-team@lists.sourceforge.net)
+AC_INIT(mpd, 0.21, musicpd-dev-team@lists.sourceforge.net)
 
 VERSION_MAJOR=0
-VERSION_MINOR=20
+VERSION_MINOR=21
 VERSION_REVISION=0
 VERSION_EXTRA=0
 
@@ -14,7 +14,7 @@ AM_SILENT_RULES
 AC_CONFIG_HEADERS(config.h)
 AC_CONFIG_MACRO_DIR([m4])
 
-AC_DEFINE(PROTOCOL_VERSION, "0.20.0", [The MPD protocol version])
+AC_DEFINE(PROTOCOL_VERSION, "0.21.0", [The MPD protocol version])
 
 GIT_COMMIT=`GIT_DIR="$srcdir/.git" git describe --dirty --always 2>/dev/null`
 if test x$GIT_COMMIT != x; then
@@ -51,6 +51,22 @@ if test "x$with_systemdsystemunitdir" != xno; then
 	AC_SUBST([systemdsystemunitdir], [$with_systemdsystemunitdir])
 fi
 AM_CONDITIONAL(HAVE_SYSTEMD, [test -n "$with_systemdsystemunitdir" -a "x$with_systemdsystemunitdir" != xno ])
+
+AC_ARG_WITH([systemduserunitdir],
+	    AS_HELP_STRING([--with-systemduserunitdir=DIR], [Directory for systemd service files]),
+	    [], [with_systemduserunitdir=no])
+if test "x$with_systemduserunitdir" = xyes; then
+	AC_MSG_CHECKING(for systemd)
+	with_systemduserunitdir=$($PKG_CONFIG --variable=systemduserunitdir systemd)
+	if test -z "$with_systemduserunitdir"; then
+		AC_MSG_ERROR([Failed to detect systemd])
+	fi
+	AC_MSG_RESULT([$with_systemduserunitdir])
+fi
+if test "x$with_systemduserunitdir" != xno; then
+	AC_SUBST([systemduserunitdir], [$with_systemduserunitdir])
+fi
+AM_CONDITIONAL(HAVE_SYSTEMD_USER, [test -n "$with_systemduserunitdir" -a "x$with_systemduserunitdir" != xno ])
 
 dnl ---------------------------------------------------------------------------
 dnl Declare Variables
@@ -186,14 +202,7 @@ dnl ---------------------------------------------------------------------------
 dnl Language Checks
 dnl ---------------------------------------------------------------------------
 
-AC_CXX_COMPILE_STDCXX_0X
-if test "$ax_cv_cxx_compile_cxx0x_native" != yes; then
-	if test "$ax_cv_cxx_compile_cxx0x_gxx" = yes; then
-	   	AM_CXXFLAGS="$AM_CXXFLAGS -std=gnu++0x"
-	elif test "$ax_cv_cxx_compile_cxx0x_cxx" = yes; then
-	   	AM_CXXFLAGS="$AM_CXXFLAGS -std=c++0x"
-	fi
-fi
+AX_CXX_COMPILE_STDCXX_14([noext], [mandatory])
 
 dnl ---------------------------------------------------------------------------
 dnl Header/Library Checks
@@ -333,11 +342,6 @@ AC_ARG_ENABLE(fifo,
 	AS_HELP_STRING([--disable-fifo],
 		[disable support for writing audio to a FIFO (default: enable)]),,
 	enable_fifo=yes)
-
-AC_ARG_ENABLE(haiku,
-	AS_HELP_STRING([--enable-haiku],
-		[enable the Haiku output plugin (default: auto)]),,
-	enable_haiku=auto)
 
 AC_ARG_ENABLE(httpd-output,
 	AS_HELP_STRING([--enable-httpd-output],
@@ -548,7 +552,7 @@ dnl -------------------------------- libmpdclient ------------------------------
 MPD_ENABLE_AUTO_PKG_DEPENDS(libmpdclient, LIBMPDCLIENT,
 	[libmpdclient >= 2.2],
 	[MPD client library], [libmpdclient not found], [],
-	[enable_database], [Cannot use --enable-libmpdclient with --disable-database])
+	[enable_database], [Database support is disabled])
 
 dnl -------------------------------- expat --------------------------------
 MPD_ENABLE_AUTO_PKG(expat, EXPAT, [expat],
@@ -717,6 +721,19 @@ MPD_ENABLE_AUTO_PKG(mms, MMS, [libmms >= 0.4],
 	[libmms mms:// protocol support], [libmms not found])
 
 dnl ---------------------------------------------------------------------------
+dnl Storage Plugins
+dnl ---------------------------------------------------------------------------
+
+MPD_ENABLE_AUTO(webdav, WEBDAV, [WebDAV storage plugin],
+	[WebDAV requires libcurl and libexpat],
+	[auto],
+	[if test x$enable_curl = xyes && test x$enable_expat = xyes; then
+		found_webdav=yes
+	else
+		found_webdav=no
+	fi])
+
+dnl ---------------------------------------------------------------------------
 dnl Playlist Plugins
 dnl ---------------------------------------------------------------------------
 
@@ -779,18 +796,14 @@ AM_CONDITIONAL(ENABLE_BZIP2_TEST, test x$BZIP2 != xno)
 
 dnl ---------------------------------- libupnp ---------------------------------
 
-if test x$enable_expat = xno; then
-	if test x$enable_upnp = xauto; then
-		AC_MSG_WARN([expat disabled -- disabling UPnP])
-		enable_upnp=no
-	elif test x$enable_upnp = xyes; then
-		AC_MSG_ERROR([expat disabled -- required for UPnP])
-	fi
-fi
-
 MPD_ENABLE_AUTO_PKG_DEPENDS(upnp, UPNP, [libupnp],
 	[UPnP client support], [libupnp not found], [],
-	[enable_database], [Cannot use --enable-upnp with --disable-database])
+	[enable_database], [Database support is disabled], [
+		MPD_DEPENDS([enable_upnp], [enable_expat],
+			[UPnP client support],
+			[UPnP requires expat])
+	]
+)
 
 dnl --------------------------------- libzzip ---------------------------------
 MPD_ENABLE_AUTO_PKG(zzip, ZZIP, [zziplib >= 0.13],
@@ -964,7 +977,7 @@ if test x$enable_tremor = xyes; then
 	fi
 fi
 
-MPD_AUTO_PKG(vorbis, VORBIS, [vorbisfile vorbis ogg],
+MPD_AUTO_PKG(vorbis, VORBIS, [vorbis ogg],
 	[Ogg Vorbis decoder], [libvorbis not found])
 if test x$enable_vorbis = xyes; then
 	AC_DEFINE(ENABLE_VORBIS_DECODER, 1, [Define for Ogg Vorbis support])
@@ -974,31 +987,36 @@ AM_CONDITIONAL(ENABLE_VORBIS_DECODER, test x$enable_vorbis = xyes || test x$enab
 
 dnl --------------------------------- sidplay ---------------------------------
 if test x$enable_sidplay != xno; then
-	# we're not using pkg-config here
-	# because libsidplay2's .pc file requires libtool
-	AC_CHECK_LIB([sidplay2],[main],[found_sidplay=yes],[found_sidplay=no],[])
+	dnl Check for libsidplayfp first
+	PKG_CHECK_MODULES([SIDPLAY], [libsidplayfp],
+		[found_sidplayfp=yes],
+		[found_sidplayfp=no])
+	found_sidplay=$found_sidplayfp
+fi
+
+if test x$enable_sidplay != xno && test x$found_sidplayfp = xno; then
+	PKG_CHECK_MODULES([SIDPLAY], [libsidplay2 libsidutils],
+		[found_sidplay=yes],
+		[found_sidplay=no])
 
 	MPD_AUTO_PRE(sidplay, [sidplay decoder plugin],
 		[libsidplay2 not found])
 fi
 
-if test x$enable_sidplay != xno; then
+if test x$enable_sidplay != xno && test x$found_sidplayfp = xno; then
 	AC_CHECK_LIB([resid-builder], [main],
 		[found_sidplay=yes], [found_sidplay=no])
 
-	if test x$found_sidplay = xyes; then
-		AC_CHECK_LIB([sidutils],[main],[:],[found_sidplay=no],[])
-	fi
-
 	MPD_AUTO_RESULT(sidplay, [sidplay decoder plugin],
-		[libresid-builder or libsidutils not found])
+		[libresid-builder not found])
 fi
 
 if test x$enable_sidplay = xyes; then
-	AC_SUBST(SIDPLAY_LIBS,"-lsidplay2 -lresid-builder -lsidutils")
-	AC_SUBST(SIDPLAY_CFLAGS,)
-
+	SIDPLAY_LIBS="$SIDPLAY_LIBS -lresid-builder"
 	AC_DEFINE(ENABLE_SIDPLAY, 1, [Define for libsidplay2 support])
+	if test x$found_sidplayfp = xyes; then
+		AC_DEFINE(HAVE_SIDPLAYFP, 1, [Define if libsidplayfp is used instead of libsidplay2])
+	fi
 fi
 
 AM_CONDITIONAL(ENABLE_SIDPLAY, test x$enable_sidplay = xyes)
@@ -1010,11 +1028,6 @@ MPD_ENABLE_AUTO_PKG(wavpack, WAVPACK, [wavpack],
 dnl --------------------------------- WildMidi --------------------------------
 MPD_ENABLE_AUTO_LIB(wildmidi, WILDMIDI, WildMidi, WildMidi_Init, [-lWildMidi], [],
 	[WildMidi decoder plugin], [libwildmidi not found])
-
-dnl ------------------------ Post Decoder Plugins Tests -----------------------
-
-AM_CONDITIONAL(HAVE_XIPH,
-	test x$enable_vorbis = xyes || test x$enable_tremor = xyes || test x$enable_flac = xyes || test x$enable_opus = xyes)
 
 dnl ---------------------------------------------------------------------------
 dnl Encoders for Streaming Audio Output Plugins
@@ -1091,8 +1104,6 @@ fi
 MPD_DEFINE_CONDITIONAL(enable_encoder, ENABLE_ENCODER,
 		[the encoder plugins])
 
-AM_CONDITIONAL(HAVE_OGG_ENCODER, test x$enable_vorbis_encoder = xyes || test x$enable_opus = xyes)
-
 dnl ---------------------------------------------------------------------------
 dnl Audio Output Plugins
 dnl ---------------------------------------------------------------------------
@@ -1116,18 +1127,17 @@ fi
 MPD_DEFINE_CONDITIONAL(enable_fifo, HAVE_FIFO,
 	[support for writing audio to a FIFO])
 
-dnl ----------------------------------- Haiku ---------------------------------
-if test x$enable_haiku = xauto; then
-	AC_CHECK_HEADER(media/MediaDefs.h,
-		[enable_haiku=yes],
-		[enable_haiku=no])
-fi
-if test x$enable_haiku = xyes; then
-	AC_DEFINE(HAVE_HAIKU,1,[Define for compiling Haiku support])
-	LIBS="$LIBS -lbe -lmedia"
-fi
+dnl ----------------------------------- SNDIO ----------------------------------
+MPD_ENABLE_AUTO_HEADER([sndio], [SNDIO], [sndio.h],
+	[-lsndio], [],
+	[sndio output plugin],
+	[libsndio not found])
 
-AM_CONDITIONAL(HAVE_HAIKU, test x$enable_haiku = xyes)
+dnl ----------------------------------- Haiku ---------------------------------
+MPD_ENABLE_AUTO_HEADER([haiku], [HAIKU], [media/MediaDefs.h],
+	[-lbe -lmedia], [],
+	[Haiku output plugin],
+	[Haiku headers not found])
 
 dnl ------------------------------- HTTPD Output ------------------------------
 if test x$enable_httpd_output = xauto; then
@@ -1256,6 +1266,27 @@ else
 fi
 
 AM_CONDITIONAL(ENABLE_WINMM_OUTPUT, test x$enable_winmm_output = xyes)
+
+dnl ---------------------------------------------------------------------------
+dnl Option groups
+dnl ---------------------------------------------------------------------------
+
+have_ogg=no
+if test x$enable_vorbis = xyes || test x$enable_tremor = xyes || test x$enable_opus = xyes || test x$enable_vorbis_encoder = xyes; then
+	have_ogg=yes
+fi
+
+have_xiph=no
+if test x$have_ogg = xyes || test x$enable_flac = xyes || test x$enable_flac_encoder = xyes; then
+	have_xiph=yes
+fi
+
+if test x$have_ogg = xyes; then
+	PKG_CHECK_MODULES([OGG], [ogg],, [AC_MSG_ERROR([libogg not found])])
+fi
+
+AM_CONDITIONAL(HAVE_OGG, test x$have_ogg = xyes)
+AM_CONDITIONAL(HAVE_XIPH, test x$have_xiph = xyes)
 
 dnl ---------------------------------------------------------------------------
 dnl Documentation
@@ -1415,6 +1446,7 @@ results(id3,[ID3])
 printf '\nPlayback support:\n\t'
 results(alsa,ALSA)
 results(fifo,FIFO)
+results(sndio,[SNDIO])
 results(recorder_output,[File Recorder])
 results(haiku,[Haiku])
 results(httpd_output,[HTTP Daemon])
@@ -1466,7 +1498,8 @@ dnl Generate files
 dnl ---------------------------------------------------------------------------
 AC_CONFIG_FILES(Makefile)
 AC_CONFIG_FILES(doc/doxygen.conf)
-AC_CONFIG_FILES(systemd/mpd.service)
+AC_CONFIG_FILES(systemd/system/mpd.service)
+AC_CONFIG_FILES(systemd/user/mpd.service)
 AC_OUTPUT
 
 echo 'MPD is ready for compilation, type "make" to begin.'

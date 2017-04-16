@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -24,7 +24,8 @@
 #include "FfmpegIo.hxx"
 #include "../DecoderAPI.hxx"
 #include "input/InputStream.hxx"
-#include "util/Error.hxx"
+
+#include <stdexcept>
 
 AvioStream::~AvioStream()
 {
@@ -37,7 +38,7 @@ AvioStream::~AvioStream()
 inline int
 AvioStream::Read(void *dest, int size)
 {
-	return decoder_read(decoder, input, dest, size);
+	return decoder_read(client, input, dest, size);
 }
 
 inline int64_t
@@ -68,10 +69,12 @@ AvioStream::Seek(int64_t pos, int whence)
 		return -1;
 	}
 
-	if (!input.LockSeek(pos, IgnoreError()))
+	try {
+		input.LockSeek(pos);
+		return input.GetOffset();
+	} catch (const std::runtime_error &) {
 		return -1;
-
-	return input.GetOffset();
+	}
 }
 
 int

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -27,13 +27,14 @@
 class PlaylistVector;
 class BufferedOutputStream;
 class TextFile;
-class Error;
 
 void
 playlist_vector_save(BufferedOutputStream &os, const PlaylistVector &pv);
 
-bool
-playlist_metadata_load(TextFile &file, PlaylistVector &pv, const char *name,
-		       Error &error);
+/**
+ * Throws #std::runtime_error on error.
+ */
+void
+playlist_metadata_load(TextFile &file, PlaylistVector &pv, const char *name);
 
 #endif

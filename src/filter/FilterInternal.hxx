@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -25,43 +25,66 @@
 #ifndef MPD_FILTER_INTERNAL_HXX
 #define MPD_FILTER_INTERNAL_HXX
 
+#include "AudioFormat.hxx"
+
+#include <assert.h>
 #include <stddef.h>
 
 struct AudioFormat;
-class Error;
 template<typename T> struct ConstBuffer;
 
 class Filter {
+protected:
+	AudioFormat out_audio_format;
+
+	explicit Filter(AudioFormat _out_audio_format)
+		:out_audio_format(_out_audio_format) {
+		assert(out_audio_format.IsValid());
+	}
+
 public:
 	virtual ~Filter() {}
 
 	/**
-	 * Opens the filter, preparing it for FilterPCM().
-	 *
-	 * @param af the audio format of incoming data; the
-	 * plugin may modify the object to enforce another input
-	 * format
-	 * @param error location to store the error occurring
-	 * @return the format of outgoing data or
-	 * AudioFormat::Undefined() on error
+	 * Returns the #AudioFormat produced by FilterPCM().
 	 */
-	virtual AudioFormat Open(AudioFormat &af, Error &error) = 0;
+	const AudioFormat &GetOutAudioFormat() const {
+		return out_audio_format;
+	}
 
 	/**
-	 * Closes the filter.  After that, you may call Open() again.
+	 * Reset the filter's state, e.g. drop/flush buffers.
 	 */
-	virtual void Close() = 0;
+	virtual void Reset() {
+	}
 
 	/**
 	 * Filters a block of PCM data.
 	 *
+	 * Throws std::runtime_error on error.
+	 *
 	 * @param src the input buffer
-	 * @param error location to store the error occurring
 	 * @return the destination buffer on success (will be
-	 * invalidated by Close() or FilterPCM()), nullptr on
-	 * error
+	 * invalidated by deleting this object or the next FilterPCM()
+	 * or Reset() call)
 	 */
-	virtual ConstBuffer<void> FilterPCM(ConstBuffer<void> src, Error &error) = 0;
+	virtual ConstBuffer<void> FilterPCM(ConstBuffer<void> src) = 0;
+};
+
+class PreparedFilter {
+public:
+	virtual ~PreparedFilter() {}
+
+	/**
+	 * Opens the filter, preparing it for FilterPCM().
+	 *
+	 * Throws std::runtime_error on error.
+	 *
+	 * @param af the audio format of incoming data; the
+	 * plugin may modify the object to enforce another input
+	 * format
+	 */
+	virtual Filter *Open(AudioFormat &af) = 0;
 };
 
 #endif

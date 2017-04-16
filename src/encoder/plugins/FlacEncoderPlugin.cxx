@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -23,10 +23,8 @@
 #include "AudioFormat.hxx"
 #include "pcm/PcmBuffer.hxx"
 #include "config/ConfigError.hxx"
-#include "util/Manual.hxx"
 #include "util/DynamicFifoBuffer.hxx"
-#include "util/Error.hxx"
-#include "util/Domain.hxx"
+#include "util/RuntimeError.hxx"
 
 #include <FLAC/stream_encoder.h>
 
@@ -34,13 +32,10 @@
 #error libFLAC is too old
 #endif
 
-struct flac_encoder {
-	Encoder encoder;
+class FlacEncoder final : public Encoder {
+	const AudioFormat audio_format;
 
-	AudioFormat audio_format;
-	unsigned compression;
-
-	FLAC__StreamEncoder *fse;
+	FLAC__StreamEncoder *const fse;
 
 	PcmBuffer expand_buffer;
 
@@ -48,113 +43,111 @@ struct flac_encoder {
 	 * This buffer will hold encoded data from libFLAC until it is
 	 * picked up with flac_encoder_read().
 	 */
-	Manual<DynamicFifoBuffer<uint8_t>> output_buffer;
+	DynamicFifoBuffer<uint8_t> output_buffer;
 
-	flac_encoder():encoder(flac_encoder_plugin) {}
+public:
+	FlacEncoder(AudioFormat _audio_format, FLAC__StreamEncoder *_fse);
+
+	~FlacEncoder() override {
+		FLAC__stream_encoder_delete(fse);
+	}
+
+	/* virtual methods from class Encoder */
+	void End() override {
+		(void) FLAC__stream_encoder_finish(fse);
+	}
+
+	void Flush() override {
+		(void) FLAC__stream_encoder_finish(fse);
+	}
+
+	void Write(const void *data, size_t length) override;
+
+	size_t Read(void *dest, size_t length) override {
+		return output_buffer.Read((uint8_t *)dest, length);
+	}
+
+private:
+	static FLAC__StreamEncoderWriteStatus WriteCallback(const FLAC__StreamEncoder *,
+							    const FLAC__byte data[],
+							    size_t bytes,
+							    gcc_unused unsigned samples,
+							    gcc_unused unsigned current_frame,
+							    void *client_data) {
+		auto &encoder = *(FlacEncoder *)client_data;
+		encoder.output_buffer.Append((const uint8_t *)data, bytes);
+		return FLAC__STREAM_ENCODER_WRITE_STATUS_OK;
+	}
 };
 
-static constexpr Domain flac_encoder_domain("vorbis_encoder");
+class PreparedFlacEncoder final : public PreparedEncoder {
+	const unsigned compression;
 
-static bool
-flac_encoder_configure(struct flac_encoder *encoder, const ConfigBlock &block,
-		       gcc_unused Error &error)
+public:
+	PreparedFlacEncoder(const ConfigBlock &block);
+
+	/* virtual methods from class PreparedEncoder */
+	Encoder *Open(AudioFormat &audio_format) override;
+
+	const char *GetMimeType() const override {
+		return  "audio/flac";
+	}
+};
+
+PreparedFlacEncoder::PreparedFlacEncoder(const ConfigBlock &block)
+	:compression(block.GetBlockValue("compression", 5u))
 {
-	encoder->compression = block.GetBlockValue("compression", 5u);
-
-	return true;
 }
 
-static Encoder *
-flac_encoder_init(const ConfigBlock &block, Error &error)
+static PreparedEncoder *
+flac_encoder_init(const ConfigBlock &block)
 {
-	flac_encoder *encoder = new flac_encoder();
-
-	/* load configuration from "block" */
-	if (!flac_encoder_configure(encoder, block, error)) {
-		/* configuration has failed, roll back and return error */
-		delete encoder;
-		return nullptr;
-	}
-
-	return &encoder->encoder;
+	return new PreparedFlacEncoder(block);
 }
 
 static void
-flac_encoder_finish(Encoder *_encoder)
+flac_encoder_setup(FLAC__StreamEncoder *fse, unsigned compression,
+		   const AudioFormat &audio_format, unsigned bits_per_sample)
 {
-	struct flac_encoder *encoder = (struct flac_encoder *)_encoder;
+	if (!FLAC__stream_encoder_set_compression_level(fse, compression))
+		throw FormatRuntimeError("error setting flac compression to %d",
+					 compression);
 
-	/* the real libFLAC cleanup was already performed by
-	   flac_encoder_close(), so no real work here */
-	delete encoder;
+	if (!FLAC__stream_encoder_set_channels(fse, audio_format.channels))
+		throw FormatRuntimeError("error setting flac channels num to %d",
+					 audio_format.channels);
+
+	if (!FLAC__stream_encoder_set_bits_per_sample(fse, bits_per_sample))
+		throw FormatRuntimeError("error setting flac bit format to %d",
+					 bits_per_sample);
+
+	if (!FLAC__stream_encoder_set_sample_rate(fse,
+						  audio_format.sample_rate))
+		throw FormatRuntimeError("error setting flac sample rate to %d",
+					 audio_format.sample_rate);
 }
 
-static bool
-flac_encoder_setup(struct flac_encoder *encoder, unsigned bits_per_sample,
-		   Error &error)
+FlacEncoder::FlacEncoder(AudioFormat _audio_format, FLAC__StreamEncoder *_fse)
+	:Encoder(false),
+	 audio_format(_audio_format), fse(_fse),
+	 output_buffer(8192)
 {
-	if ( !FLAC__stream_encoder_set_compression_level(encoder->fse,
-					encoder->compression)) {
-		error.Format(config_domain,
-			     "error setting flac compression to %d",
-			     encoder->compression);
-		return false;
-	}
+	/* this immediately outputs data through callback */
 
-	if ( !FLAC__stream_encoder_set_channels(encoder->fse,
-					encoder->audio_format.channels)) {
-		error.Format(config_domain,
-			     "error setting flac channels num to %d",
-			     encoder->audio_format.channels);
-		return false;
-	}
-	if ( !FLAC__stream_encoder_set_bits_per_sample(encoder->fse,
-							bits_per_sample)) {
-		error.Format(config_domain,
-			     "error setting flac bit format to %d",
-			     bits_per_sample);
-		return false;
-	}
-	if ( !FLAC__stream_encoder_set_sample_rate(encoder->fse,
-					encoder->audio_format.sample_rate)) {
-		error.Format(config_domain,
-			     "error setting flac sample rate to %d",
-			     encoder->audio_format.sample_rate);
-		return false;
-	}
-	return true;
+	auto init_status =
+		FLAC__stream_encoder_init_stream(fse,
+						 WriteCallback,
+						 nullptr, nullptr, nullptr,
+						 this);
+
+	if (init_status != FLAC__STREAM_ENCODER_INIT_STATUS_OK)
+		throw FormatRuntimeError("failed to initialize encoder: %s\n",
+					 FLAC__StreamEncoderInitStatusString[init_status]);
 }
 
-static FLAC__StreamEncoderWriteStatus
-flac_write_callback(gcc_unused const FLAC__StreamEncoder *fse,
-		    const FLAC__byte data[],
-		    size_t bytes,
-		    gcc_unused unsigned samples,
-		    gcc_unused unsigned current_frame, void *client_data)
+Encoder *
+PreparedFlacEncoder::Open(AudioFormat &audio_format)
 {
-	struct flac_encoder *encoder = (struct flac_encoder *) client_data;
-
-	//transfer data to buffer
-	encoder->output_buffer->Append((const uint8_t *)data, bytes);
-
-	return FLAC__STREAM_ENCODER_WRITE_STATUS_OK;
-}
-
-static void
-flac_encoder_close(Encoder *_encoder)
-{
-	struct flac_encoder *encoder = (struct flac_encoder *)_encoder;
-
-	FLAC__stream_encoder_delete(encoder->fse);
-
-	encoder->expand_buffer.Clear();
-	encoder->output_buffer.Destruct();
-}
-
-static bool
-flac_encoder_open(Encoder *_encoder, AudioFormat &audio_format, Error &error)
-{
-	struct flac_encoder *encoder = (struct flac_encoder *)_encoder;
 	unsigned bits_per_sample;
 
 	/* FIXME: flac should support 32bit as well */
@@ -176,51 +169,20 @@ flac_encoder_open(Encoder *_encoder, AudioFormat &audio_format, Error &error)
 		audio_format.format = SampleFormat::S24_P32;
 	}
 
-	encoder->audio_format = audio_format;
-
 	/* allocate the encoder */
-	encoder->fse = FLAC__stream_encoder_new();
-	if (encoder->fse == nullptr) {
-		error.Set(flac_encoder_domain, "flac_new() failed");
-		return false;
+	auto fse = FLAC__stream_encoder_new();
+	if (fse == nullptr)
+		throw std::runtime_error("FLAC__stream_encoder_new() failed");
+
+	try {
+		flac_encoder_setup(fse, compression,
+				   audio_format, bits_per_sample);
+	} catch (...) {
+		FLAC__stream_encoder_delete(fse);
+		throw;
 	}
 
-	if (!flac_encoder_setup(encoder, bits_per_sample, error)) {
-		FLAC__stream_encoder_delete(encoder->fse);
-		return false;
-	}
-
-	encoder->output_buffer.Construct(8192);
-
-	/* this immediately outputs data through callback */
-
-	{
-		FLAC__StreamEncoderInitStatus init_status;
-
-		init_status = FLAC__stream_encoder_init_stream(encoder->fse,
-			    flac_write_callback,
-			    nullptr, nullptr, nullptr, encoder);
-
-		if(init_status != FLAC__STREAM_ENCODER_INIT_STATUS_OK) {
-			error.Format(flac_encoder_domain,
-				     "failed to initialize encoder: %s\n",
-				     FLAC__StreamEncoderInitStatusString[init_status]);
-			flac_encoder_close(_encoder);
-			return false;
-		}
-	}
-
-	return true;
-}
-
-
-static bool
-flac_encoder_flush(Encoder *_encoder, gcc_unused Error &error)
-{
-	struct flac_encoder *encoder = (struct flac_encoder *)_encoder;
-
-	(void) FLAC__stream_encoder_finish(encoder->fse);
-	return true;
+	return new FlacEncoder(audio_format, fse);
 }
 
 static inline void
@@ -241,31 +203,27 @@ pcm16_to_flac(int32_t *out, const int16_t *in, unsigned num_samples)
 	}
 }
 
-static bool
-flac_encoder_write(Encoder *_encoder,
-		   const void *data, size_t length,
-		   gcc_unused Error &error)
+void
+FlacEncoder::Write(const void *data, size_t length)
 {
-	struct flac_encoder *encoder = (struct flac_encoder *)_encoder;
-	unsigned num_frames, num_samples;
 	void *exbuffer;
 	const void *buffer = nullptr;
 
 	/* format conversion */
 
-	num_frames = length / encoder->audio_format.GetFrameSize();
-	num_samples = num_frames * encoder->audio_format.channels;
+	const unsigned num_frames = length / audio_format.GetFrameSize();
+	const unsigned num_samples = num_frames * audio_format.channels;
 
-	switch (encoder->audio_format.format) {
+	switch (audio_format.format) {
 	case SampleFormat::S8:
-		exbuffer = encoder->expand_buffer.Get(length * 4);
+		exbuffer = expand_buffer.Get(length * 4);
 		pcm8_to_flac((int32_t *)exbuffer, (const int8_t *)data,
 			     num_samples);
 		buffer = exbuffer;
 		break;
 
 	case SampleFormat::S16:
-		exbuffer = encoder->expand_buffer.Get(length * 2);
+		exbuffer = expand_buffer.Get(length * 2);
 		pcm16_to_flac((int32_t *)exbuffer, (const int16_t *)data,
 			      num_samples);
 		buffer = exbuffer;
@@ -284,42 +242,14 @@ flac_encoder_write(Encoder *_encoder,
 
 	/* feed samples to encoder */
 
-	if (!FLAC__stream_encoder_process_interleaved(encoder->fse,
+	if (!FLAC__stream_encoder_process_interleaved(fse,
 						      (const FLAC__int32 *)buffer,
-						      num_frames)) {
-		error.Set(flac_encoder_domain, "flac encoder process failed");
-		return false;
-	}
-
-	return true;
-}
-
-static size_t
-flac_encoder_read(Encoder *_encoder, void *dest, size_t length)
-{
-	struct flac_encoder *encoder = (struct flac_encoder *)_encoder;
-
-	return encoder->output_buffer->Read((uint8_t *)dest, length);
-}
-
-static const char *
-flac_encoder_get_mime_type(gcc_unused Encoder *_encoder)
-{
-	return "audio/flac";
+						      num_frames))
+		throw std::runtime_error("flac encoder process failed");
 }
 
 const EncoderPlugin flac_encoder_plugin = {
 	"flac",
 	flac_encoder_init,
-	flac_encoder_finish,
-	flac_encoder_open,
-	flac_encoder_close,
-	flac_encoder_flush,
-	flac_encoder_flush,
-	nullptr,
-	nullptr,
-	flac_encoder_write,
-	flac_encoder_read,
-	flac_encoder_get_mime_type,
 };
 

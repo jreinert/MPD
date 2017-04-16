@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -25,69 +25,65 @@
 #define MPD_FLAC_COMMON_HXX
 
 #include "FlacInput.hxx"
+#include "FlacPcm.hxx"
 #include "../DecoderAPI.hxx"
-#include "pcm/PcmBuffer.hxx"
 
 #include <FLAC/stream_decoder.h>
 
-struct flac_data : public FlacInput {
-	PcmBuffer buffer;
-
+struct FlacDecoder : public FlacInput {
 	/**
-	 * The size of one frame in the output buffer.
+	 * Has DecoderClient::Ready() been called yet?
 	 */
-	unsigned frame_size;
-
-	/**
-	 * Has decoder_initialized() been called yet?
-	 */
-	bool initialized;
+	bool initialized = false;
 
 	/**
 	 * Does the FLAC file contain an unsupported audio format?
 	 */
-	bool unsupported;
+	bool unsupported = false;
+
+	FlacPcmImport pcm_import;
 
 	/**
-	 * The validated audio format of the FLAC file.  This
-	 * attribute is defined if "initialized" is true.
+	 * End of last frame's position within the stream.  This is
+	 * used for bit rate calculations.
 	 */
-	AudioFormat audio_format;
-
-	/**
-	 * The total number of frames in this song.  The decoder
-	 * plugin may initialize this attribute to override the value
-	 * provided by libFLAC (e.g. for sub songs from a CUE sheet).
-	 */
-	FLAC__uint64 total_frames;
-
-	/**
-	 * The number of the first frame in this song.  This is only
-	 * non-zero if playing sub songs from a CUE sheet.
-	 */
-	FLAC__uint64 first_frame;
-
-	/**
-	 * The number of the next frame which is going to be decoded.
-	 */
-	FLAC__uint64 next_frame;
-
-	FLAC__uint64 position;
-
-	Decoder &decoder;
-	InputStream &input_stream;
+	FLAC__uint64 position = 0;
 
 	Tag tag;
 
-	flac_data(Decoder &decoder, InputStream &input_stream);
+	FlacDecoder(DecoderClient &_client, InputStream &_input_stream)
+		:FlacInput(_input_stream, &_client) {}
+
+	/**
+	 * Wrapper for DecoderClient::Ready().
+	 */
+	bool Initialize(unsigned sample_rate, unsigned bits_per_sample,
+			unsigned channels, FLAC__uint64 total_frames);
+
+	void OnMetadata(const FLAC__StreamMetadata &metadata);
+
+	FLAC__StreamDecoderWriteStatus OnWrite(const FLAC__Frame &frame,
+					       const FLAC__int32 *const buf[],
+					       FLAC__uint64 nbytes);
+
+	/**
+	 * Calculate the delta (in bytes) between the last frame and
+	 * the current frame.
+	 */
+	FLAC__uint64 GetDeltaPosition(const FLAC__StreamDecoder &sd);
+
+private:
+	void OnStreamInfo(const FLAC__StreamMetadata_StreamInfo &stream_info);
+	void OnVorbisComment(const FLAC__StreamMetadata_VorbisComment &vc);
+
+	/**
+	 * This function attempts to call DecoderClient::Ready() in case there
+	 * was no STREAMINFO block.  This is allowed for nonseekable streams,
+	 * where the server sends us only a part of the file, without
+	 * providing the STREAMINFO block from the beginning of the file
+	 * (e.g. when seeking with SqueezeBox Server).
+	 */
+	bool OnFirstFrame(const FLAC__FrameHeader &header);
 };
-
-void flac_metadata_common_cb(const FLAC__StreamMetadata * block,
-			     struct flac_data *data);
-
-FLAC__StreamDecoderWriteStatus
-flac_common_write(struct flac_data *data, const FLAC__Frame * frame,
-		  const FLAC__int32 *const buf[],
-		  FLAC__uint64 nbytes);
 
 #endif /* _FLAC_COMMON_H */

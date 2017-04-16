@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -20,15 +20,17 @@
 #include "config.h"
 #include "TagStream.hxx"
 #include "tag/Generic.hxx"
-#include "tag/TagHandler.hxx"
-#include "tag/TagBuilder.hxx"
+#include "tag/Handler.hxx"
+#include "tag/Builder.hxx"
+#include "util/MimeType.hxx"
 #include "util/UriUtil.hxx"
-#include "util/Error.hxx"
 #include "decoder/DecoderList.hxx"
 #include "decoder/DecoderPlugin.hxx"
 #include "input/InputStream.hxx"
 #include "thread/Mutex.hxx"
 #include "thread/Cond.hxx"
+
+#include <stdexcept>
 
 #include <assert.h>
 
@@ -51,14 +53,21 @@ tag_stream_scan(InputStream &is, const TagHandler &handler, void *ctx)
 
 	UriSuffixBuffer suffix_buffer;
 	const char *const suffix = uri_get_suffix(is.GetURI(), suffix_buffer);
-	const char *const mime = is.GetMimeType();
+	const char *mime = is.GetMimeType();
 
 	if (suffix == nullptr && mime == nullptr)
 		return false;
 
+	std::string mime_base;
+	if (mime != nullptr)
+		mime = (mime_base = GetMimeTypeBase(mime)).c_str();
+
 	return decoder_plugins_try([suffix, mime, &is,
 				    &handler, ctx](const DecoderPlugin &plugin){
-			is.LockRewind(IgnoreError());
+			try {
+				is.LockRewind();
+			} catch (const std::runtime_error &) {
+			}
 
 			return CheckDecoderPlugin(plugin, suffix, mime) &&
 				plugin.ScanStream(is, handler, ctx);
@@ -67,13 +76,14 @@ tag_stream_scan(InputStream &is, const TagHandler &handler, void *ctx)
 
 bool
 tag_stream_scan(const char *uri, const TagHandler &handler, void *ctx)
-{
+try {
 	Mutex mutex;
 	Cond cond;
 
-	auto is = InputStream::OpenReady(uri, mutex, cond,
-					 IgnoreError());
-	return is && tag_stream_scan(*is, handler, ctx);
+	auto is = InputStream::OpenReady(uri, mutex, cond);
+	return tag_stream_scan(*is, handler, ctx);
+} catch (const std::exception &e) {
+	return false;
 }
 
 bool
@@ -92,11 +102,12 @@ tag_stream_scan(InputStream &is, TagBuilder &builder)
 
 bool
 tag_stream_scan(const char *uri, TagBuilder &builder)
-{
+try {
 	Mutex mutex;
 	Cond cond;
 
-	auto is = InputStream::OpenReady(uri, mutex, cond,
-					 IgnoreError());
-	return is && tag_stream_scan(*is, builder);
+	auto is = InputStream::OpenReady(uri, mutex, cond);
+	return tag_stream_scan(*is, builder);
+} catch (const std::exception &e) {
+	return false;
 }

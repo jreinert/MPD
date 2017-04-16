@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -20,17 +20,16 @@
 #ifndef MPD_INPUT_FILE_HXX
 #define MPD_INPUT_FILE_HXX
 
-class InputStream;
+#include "input/Ptr.hxx"
+
 class Path;
 class Mutex;
 class Cond;
-class Error;
 
 extern const struct InputPlugin input_plugin_file;
 
-InputStream *
+InputStreamPtr
 OpenFileInputStream(Path path,
-		    Mutex &mutex, Cond &cond,
-		    Error &error);
+		    Mutex &mutex, Cond &cond);
 
 #endif

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -26,12 +26,12 @@ get_bool(const char *value, bool *value_r)
 	static const char *const t[] = { "yes", "true", "1", nullptr };
 	static const char *const f[] = { "no", "false", "0", nullptr };
 
-	if (string_array_contains(t, value)) {
+	if (StringArrayContainsCase(t, value)) {
 		*value_r = true;
 		return true;
 	}
 
-	if (string_array_contains(f, value)) {
+	if (StringArrayContainsCase(f, value)) {
 		*value_r = false;
 		return true;
 	}

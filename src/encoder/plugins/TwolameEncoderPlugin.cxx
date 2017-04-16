@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -23,43 +23,71 @@
 #include "AudioFormat.hxx"
 #include "config/ConfigError.hxx"
 #include "util/NumberParser.hxx"
-#include "util/Error.hxx"
+#include "util/RuntimeError.hxx"
 #include "util/Domain.hxx"
 #include "Log.hxx"
 
 #include <twolame.h>
 
+#include <stdexcept>
+
 #include <assert.h>
 #include <string.h>
 
-struct TwolameEncoder final {
-	Encoder encoder;
-
-	AudioFormat audio_format;
-	float quality;
-	int bitrate;
+class TwolameEncoder final : public Encoder {
+	const AudioFormat audio_format;
 
 	twolame_options *options;
 
 	unsigned char output_buffer[32768];
-	size_t output_buffer_length;
-	size_t output_buffer_position;
+	size_t output_buffer_length = 0;
+	size_t output_buffer_position = 0;
 
 	/**
 	 * Call libtwolame's flush function when the output_buffer is
 	 * empty?
 	 */
-	bool flush;
+	bool flush = false;
 
-	TwolameEncoder():encoder(twolame_encoder_plugin) {}
+public:
+	TwolameEncoder(const AudioFormat _audio_format,
+		       twolame_options *_options)
+		:Encoder(false),
+		 audio_format(_audio_format), options(_options) {}
+	~TwolameEncoder() override;
 
-	bool Configure(const ConfigBlock &block, Error &error);
+	/* virtual methods from class Encoder */
+
+	void End() override {
+		flush = true;
+	}
+
+	void Flush() override {
+		flush = true;
+	}
+
+	void Write(const void *data, size_t length) override;
+	size_t Read(void *dest, size_t length) override;
+};
+
+class PreparedTwolameEncoder final : public PreparedEncoder {
+	float quality;
+	int bitrate;
+
+public:
+	PreparedTwolameEncoder(const ConfigBlock &block);
+
+	/* virtual methods from class PreparedEncoder */
+	Encoder *Open(AudioFormat &audio_format) override;
+
+	const char *GetMimeType() const override {
+		return  "audio/mpeg";
+	}
 };
 
 static constexpr Domain twolame_encoder_domain("twolame_encoder");
 
-bool
-TwolameEncoder::Configure(const ConfigBlock &block, Error &error)
+PreparedTwolameEncoder::PreparedTwolameEncoder(const ConfigBlock &block)
 {
 	const char *value;
 	char *endptr;
@@ -70,245 +98,142 @@ TwolameEncoder::Configure(const ConfigBlock &block, Error &error)
 
 		quality = ParseDouble(value, &endptr);
 
-		if (*endptr != '\0' || quality < -1.0 || quality > 10.0) {
-			error.Format(config_domain,
-				     "quality \"%s\" is not a number in the "
-				     "range -1 to 10",
-				     value);
-			return false;
-		}
+		if (*endptr != '\0' || quality < -1.0 || quality > 10.0)
+			throw FormatRuntimeError("quality \"%s\" is not a number in the "
+						 "range -1 to 10",
+						 value);
 
-		if (block.GetBlockValue("bitrate") != nullptr) {
-			error.Set(config_domain,
-				  "quality and bitrate are both defined");
-			return false;
-		}
+		if (block.GetBlockValue("bitrate") != nullptr)
+			throw std::runtime_error("quality and bitrate are both defined");
 	} else {
 		/* a bit rate was configured */
 
 		value = block.GetBlockValue("bitrate");
-		if (value == nullptr) {
-			error.Set(config_domain,
-				  "neither bitrate nor quality defined");
-			return false;
-		}
+		if (value == nullptr)
+			throw std::runtime_error("neither bitrate nor quality defined");
 
 		quality = -2.0;
 		bitrate = ParseInt(value, &endptr);
 
-		if (*endptr != '\0' || bitrate <= 0) {
-			error.Set(config_domain,
-				  "bitrate should be a positive integer");
-			return false;
-		}
+		if (*endptr != '\0' || bitrate <= 0)
+			throw std::runtime_error("bitrate should be a positive integer");
 	}
-
-	return true;
 }
 
-static Encoder *
-twolame_encoder_init(const ConfigBlock &block, Error &error_r)
+static PreparedEncoder *
+twolame_encoder_init(const ConfigBlock &block)
 {
 	FormatDebug(twolame_encoder_domain,
 		    "libtwolame version %s", get_twolame_version());
 
-	TwolameEncoder *encoder = new TwolameEncoder();
-
-	/* load configuration from "block" */
-	if (!encoder->Configure(block, error_r)) {
-		/* configuration has failed, roll back and return error */
-		delete encoder;
-		return nullptr;
-	}
-
-	return &encoder->encoder;
+	return new PreparedTwolameEncoder(block);
 }
 
 static void
-twolame_encoder_finish(Encoder *_encoder)
+twolame_encoder_setup(twolame_options *options, float quality, int bitrate,
+		      const AudioFormat &audio_format)
 {
-	TwolameEncoder *encoder = (TwolameEncoder *)_encoder;
-
-	/* the real libtwolame cleanup was already performed by
-	   twolame_encoder_close(), so no real work here */
-	delete encoder;
-}
-
-static bool
-twolame_encoder_setup(TwolameEncoder *encoder, Error &error)
-{
-	if (encoder->quality >= -1.0) {
+	if (quality >= -1.0) {
 		/* a quality was configured (VBR) */
 
-		if (0 != twolame_set_VBR(encoder->options, true)) {
-			error.Set(twolame_encoder_domain,
-				  "error setting twolame VBR mode");
-			return false;
-		}
-		if (0 != twolame_set_VBR_q(encoder->options, encoder->quality)) {
-			error.Set(twolame_encoder_domain,
-				  "error setting twolame VBR quality");
-			return false;
-		}
+		if (0 != twolame_set_VBR(options, true))
+			throw std::runtime_error("error setting twolame VBR mode");
+
+		if (0 != twolame_set_VBR_q(options, quality))
+			throw std::runtime_error("error setting twolame VBR quality");
 	} else {
 		/* a bit rate was configured */
 
-		if (0 != twolame_set_brate(encoder->options, encoder->bitrate)) {
-			error.Set(twolame_encoder_domain,
-				  "error setting twolame bitrate");
-			return false;
-		}
+		if (0 != twolame_set_brate(options, bitrate))
+			throw std::runtime_error("error setting twolame bitrate");
 	}
 
-	if (0 != twolame_set_num_channels(encoder->options,
-					  encoder->audio_format.channels)) {
-		error.Set(twolame_encoder_domain,
-			  "error setting twolame num channels");
-		return false;
-	}
+	if (0 != twolame_set_num_channels(options, audio_format.channels))
+		throw std::runtime_error("error setting twolame num channels");
 
-	if (0 != twolame_set_in_samplerate(encoder->options,
-					   encoder->audio_format.sample_rate)) {
-		error.Set(twolame_encoder_domain,
-			  "error setting twolame sample rate");
-		return false;
-	}
+	if (0 != twolame_set_in_samplerate(options,
+					   audio_format.sample_rate))
+		throw std::runtime_error("error setting twolame sample rate");
 
-	if (0 > twolame_init_params(encoder->options)) {
-		error.Set(twolame_encoder_domain,
-			  "error initializing twolame params");
-		return false;
-	}
-
-	return true;
+	if (0 > twolame_init_params(options))
+		throw std::runtime_error("error initializing twolame params");
 }
 
-static bool
-twolame_encoder_open(Encoder *_encoder, AudioFormat &audio_format,
-		     Error &error)
+Encoder *
+PreparedTwolameEncoder::Open(AudioFormat &audio_format)
 {
-	TwolameEncoder *encoder = (TwolameEncoder *)_encoder;
-
 	audio_format.format = SampleFormat::S16;
 	audio_format.channels = 2;
 
-	encoder->audio_format = audio_format;
+	auto options = twolame_init();
+	if (options == nullptr)
+		throw std::runtime_error("twolame_init() failed");
 
-	encoder->options = twolame_init();
-	if (encoder->options == nullptr) {
-		error.Set(twolame_encoder_domain, "twolame_init() failed");
-		return false;
+	try {
+		twolame_encoder_setup(options, quality, bitrate,
+				      audio_format);
+	} catch (...) {
+		twolame_close(&options);
+		throw;
 	}
 
-	if (!twolame_encoder_setup(encoder, error)) {
-		twolame_close(&encoder->options);
-		return false;
-	}
-
-	encoder->output_buffer_length = 0;
-	encoder->output_buffer_position = 0;
-	encoder->flush = false;
-
-	return true;
+	return new TwolameEncoder(audio_format, options);
 }
 
-static void
-twolame_encoder_close(Encoder *_encoder)
+TwolameEncoder::~TwolameEncoder()
 {
-	TwolameEncoder *encoder = (TwolameEncoder *)_encoder;
-
-	twolame_close(&encoder->options);
+	twolame_close(&options);
 }
 
-static bool
-twolame_encoder_flush(Encoder *_encoder, gcc_unused Error &error)
+void
+TwolameEncoder::Write(const void *data, size_t length)
 {
-	TwolameEncoder *encoder = (TwolameEncoder *)_encoder;
-
-	encoder->flush = true;
-	return true;
-}
-
-static bool
-twolame_encoder_write(Encoder *_encoder,
-		      const void *data, size_t length,
-		      gcc_unused Error &error)
-{
-	TwolameEncoder *encoder = (TwolameEncoder *)_encoder;
 	const int16_t *src = (const int16_t*)data;
 
-	assert(encoder->output_buffer_position ==
-	       encoder->output_buffer_length);
+	assert(output_buffer_position == output_buffer_length);
 
-	const unsigned num_frames =
-		length / encoder->audio_format.GetFrameSize();
+	const unsigned num_frames = length / audio_format.GetFrameSize();
 
-	int bytes_out = twolame_encode_buffer_interleaved(encoder->options,
+	int bytes_out = twolame_encode_buffer_interleaved(options,
 							  src, num_frames,
-							  encoder->output_buffer,
-							  sizeof(encoder->output_buffer));
-	if (bytes_out < 0) {
-		error.Set(twolame_encoder_domain, "twolame encoder failed");
-		return false;
-	}
+							  output_buffer,
+							  sizeof(output_buffer));
+	if (bytes_out < 0)
+		throw std::runtime_error("twolame encoder failed");
 
-	encoder->output_buffer_length = (size_t)bytes_out;
-	encoder->output_buffer_position = 0;
-	return true;
+	output_buffer_length = (size_t)bytes_out;
+	output_buffer_position = 0;
 }
 
-static size_t
-twolame_encoder_read(Encoder *_encoder, void *dest, size_t length)
+size_t
+TwolameEncoder::Read(void *dest, size_t length)
 {
-	TwolameEncoder *encoder = (TwolameEncoder *)_encoder;
+	assert(output_buffer_position <= output_buffer_length);
 
-	assert(encoder->output_buffer_position <=
-	       encoder->output_buffer_length);
-
-	if (encoder->output_buffer_position == encoder->output_buffer_length &&
-	    encoder->flush) {
-		int ret = twolame_encode_flush(encoder->options,
-					       encoder->output_buffer,
-					       sizeof(encoder->output_buffer));
+	if (output_buffer_position == output_buffer_length && flush) {
+		int ret = twolame_encode_flush(options, output_buffer,
+					       sizeof(output_buffer));
 		if (ret > 0) {
-			encoder->output_buffer_length = (size_t)ret;
-			encoder->output_buffer_position = 0;
+			output_buffer_length = (size_t)ret;
+			output_buffer_position = 0;
 		}
 
-		encoder->flush = false;
+		flush = false;
 	}
 
 
-	const size_t remainning = encoder->output_buffer_length
-		- encoder->output_buffer_position;
+	const size_t remainning = output_buffer_length - output_buffer_position;
 	if (length > remainning)
 		length = remainning;
 
-	memcpy(dest, encoder->output_buffer + encoder->output_buffer_position,
-	       length);
+	memcpy(dest, output_buffer + output_buffer_position, length);
 
-	encoder->output_buffer_position += length;
+	output_buffer_position += length;
 
 	return length;
-}
-
-static const char *
-twolame_encoder_get_mime_type(gcc_unused Encoder *_encoder)
-{
-	return "audio/mpeg";
 }
 
 const EncoderPlugin twolame_encoder_plugin = {
 	"twolame",
 	twolame_encoder_init,
-	twolame_encoder_finish,
-	twolame_encoder_open,
-	twolame_encoder_close,
-	twolame_encoder_flush,
-	twolame_encoder_flush,
-	nullptr,
-	nullptr,
-	twolame_encoder_write,
-	twolame_encoder_read,
-	twolame_encoder_get_mime_type,
 };

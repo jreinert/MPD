@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -22,15 +22,13 @@
 #include "../DecoderAPI.hxx"
 #include "input/InputStream.hxx"
 #include "config/ConfigGlobal.hxx"
-#include "tag/TagId3.hxx"
-#include "tag/TagRva2.hxx"
-#include "tag/TagHandler.hxx"
+#include "tag/Id3Scan.hxx"
+#include "tag/Rva2.hxx"
+#include "tag/Handler.hxx"
 #include "tag/ReplayGain.hxx"
 #include "tag/MixRamp.hxx"
 #include "CheckAudioFormat.hxx"
 #include "util/StringCompare.hxx"
-#include "util/ASCII.hxx"
-#include "util/Error.hxx"
 #include "util/Domain.hxx"
 #include "Log.hxx"
 
@@ -39,6 +37,8 @@
 #ifdef ENABLE_ID3TAG
 #include <id3tag.h>
 #endif
+
+#include <stdexcept>
 
 #include <assert.h>
 #include <stdlib.h>
@@ -127,25 +127,25 @@ struct MadDecoder {
 	SignedSongTime total_time;
 	SongTime elapsed_time;
 	SongTime seek_time;
-	enum muteframe mute_frame;
-	long *frame_offsets;
-	mad_timer_t *times;
-	unsigned long highest_frame;
-	unsigned long max_frames;
-	unsigned long current_frame;
-	unsigned int drop_start_frames;
-	unsigned int drop_end_frames;
-	unsigned int drop_start_samples;
-	unsigned int drop_end_samples;
-	bool found_replay_gain;
-	bool found_first_frame;
-	bool decoded_first_frame;
+	enum muteframe mute_frame = MUTEFRAME_NONE;
+	long *frame_offsets = nullptr;
+	mad_timer_t *times = nullptr;
+	unsigned long highest_frame = 0;
+	unsigned long max_frames = 0;
+	unsigned long current_frame = 0;
+	unsigned int drop_start_frames = 0;
+	unsigned int drop_end_frames = 0;
+	unsigned int drop_start_samples = 0;
+	unsigned int drop_end_samples = 0;
+	bool found_replay_gain = false;
+	bool found_first_frame = false;
+	bool decoded_first_frame = false;
 	unsigned long bit_rate;
-	Decoder *const decoder;
+	DecoderClient *const client;
 	InputStream &input_stream;
-	enum mad_layer layer;
+	enum mad_layer layer = mad_layer(0);
 
-	MadDecoder(Decoder *decoder, InputStream &input_stream);
+	MadDecoder(DecoderClient *client, InputStream &input_stream);
 	~MadDecoder();
 
 	bool Seek(long offset);
@@ -182,31 +182,23 @@ struct MadDecoder {
 	void UpdateTimerNextFrame();
 
 	/**
-	 * Sends the synthesized current frame via decoder_data().
+	 * Sends the synthesized current frame via
+	 * DecoderClient::SubmitData().
 	 */
 	DecoderCommand SendPCM(unsigned i, unsigned pcm_length);
 
 	/**
 	 * Synthesize the current frame and send it via
-	 * decoder_data().
+	 * DecoderClient::SubmitData().
 	 */
 	DecoderCommand SyncAndSend();
 
 	bool Read();
 };
 
-MadDecoder::MadDecoder(Decoder *_decoder,
+MadDecoder::MadDecoder(DecoderClient *_client,
 		       InputStream &_input_stream)
-	:mute_frame(MUTEFRAME_NONE),
-	 frame_offsets(nullptr),
-	 times(nullptr),
-	 highest_frame(0), max_frames(0), current_frame(0),
-	 drop_start_frames(0), drop_end_frames(0),
-	 drop_start_samples(0), drop_end_samples(0),
-	 found_replay_gain(false),
-	 found_first_frame(false), decoded_first_frame(false),
-	 decoder(_decoder), input_stream(_input_stream),
-	 layer(mad_layer(0))
+	:client(_client), input_stream(_input_stream)
 {
 	mad_stream_init(&stream);
 	mad_stream_options(&stream, MAD_OPTION_IGNORECRC);
@@ -218,9 +210,11 @@ MadDecoder::MadDecoder(Decoder *_decoder,
 inline bool
 MadDecoder::Seek(long offset)
 {
-	Error error;
-	if (!input_stream.LockSeek(offset, error))
+	try {
+		input_stream.LockSeek(offset);
+	} catch (const std::runtime_error &) {
 		return false;
+	}
 
 	mad_stream_buffer(&stream, input_buffer, 0);
 	stream.error = MAD_ERROR_NONE;
@@ -250,7 +244,7 @@ MadDecoder::FillBuffer()
 	if (length == 0)
 		return false;
 
-	length = decoder_read(decoder, input_stream, dest, length);
+	length = decoder_read(client, input_stream, dest, length);
 	if (length == 0)
 		return false;
 
@@ -340,7 +334,7 @@ MadDecoder::ParseId3(size_t tagsize, Tag **mpd_tag)
 		memcpy(allocated, stream.this_frame, count);
 		mad_stream_skip(&(stream), count);
 
-		if (!decoder_read_full(decoder, input_stream,
+		if (!decoder_read_full(client, input_stream,
 				       allocated + count, tagsize - count)) {
 			LogDebug(mad_domain, "error parsing ID3 tag");
 			delete[] allocated;
@@ -364,15 +358,15 @@ MadDecoder::ParseId3(size_t tagsize, Tag **mpd_tag)
 		}
 	}
 
-	if (decoder != nullptr) {
+	if (client != nullptr) {
 		ReplayGainInfo rgi;
 
 		if (parse_id3_replay_gain_info(rgi, id3_tag)) {
-			decoder_replay_gain(*decoder, &rgi);
+			client->SubmitReplayGain(&rgi);
 			found_replay_gain = true;
 		}
 
-		decoder_mixramp(*decoder, parse_id3_mixramp(id3_tag));
+		client->SubmitMixRamp(parse_id3_mixramp(id3_tag));
 	}
 
 	id3_tag_delete(id3_tag);
@@ -390,7 +384,7 @@ MadDecoder::ParseId3(size_t tagsize, Tag **mpd_tag)
 		mad_stream_skip(&stream, tagsize);
 	} else {
 		mad_stream_skip(&stream, count);
-		decoder_skip(decoder, input_stream, tagsize - count);
+		decoder_skip(client, input_stream, tagsize - count);
 	}
 #endif
 }
@@ -807,13 +801,13 @@ MadDecoder::DecodeFirstFrame(Tag **tag)
 
 			/* Album gain isn't currently used.  See comment in
 			 * parse_lame() for details. -- jat */
-			if (decoder != nullptr && !found_replay_gain &&
+			if (client != nullptr && !found_replay_gain &&
 			    lame.track_gain) {
 				ReplayGainInfo rgi;
 				rgi.Clear();
-				rgi.tuples[REPLAY_GAIN_TRACK].gain = lame.track_gain;
-				rgi.tuples[REPLAY_GAIN_TRACK].peak = lame.peak;
-				decoder_replay_gain(*decoder, &rgi);
+				rgi.track.gain = lame.track_gain;
+				rgi.track.peak = lame.peak;
+				client->SubmitReplayGain(&rgi);
 			}
 		}
 	}
@@ -910,9 +904,9 @@ MadDecoder::SendPCM(unsigned i, unsigned pcm_length)
 				       MAD_NCHANNELS(&frame.header));
 		num_samples *= MAD_NCHANNELS(&frame.header);
 
-		auto cmd = decoder_data(*decoder, input_stream, output_buffer,
-					sizeof(output_buffer[0]) * num_samples,
-					bit_rate / 1000);
+		auto cmd = client->SubmitData(input_stream, output_buffer,
+					      sizeof(output_buffer[0]) * num_samples,
+					      bit_rate / 1000);
 		if (cmd != DecoderCommand::NONE)
 			return cmd;
 	}
@@ -992,18 +986,18 @@ MadDecoder::Read()
 		if (cmd == DecoderCommand::SEEK) {
 			assert(input_stream.IsSeekable());
 
-			unsigned long j =
-				TimeToFrame(decoder_seek_time(*decoder));
+			const auto t = client->GetSeekTime();
+			unsigned long j = TimeToFrame(t);
 			if (j < highest_frame) {
 				if (Seek(frame_offsets[j])) {
 					current_frame = j;
-					decoder_command_finished(*decoder);
+					client->CommandFinished();
 				} else
-					decoder_seek_error(*decoder);
+					client->SeekError();
 			} else {
-				seek_time = decoder_seek_time(*decoder);
+				seek_time = t;
 				mute_frame = MUTEFRAME_SEEK;
-				decoder_command_finished(*decoder);
+				client->CommandFinished();
 			}
 		} else if (cmd != DecoderCommand::NONE)
 			return false;
@@ -1017,8 +1011,8 @@ MadDecoder::Read()
 			ret = DecodeNextFrameHeader(&tag);
 
 			if (tag != nullptr) {
-				decoder_tag(*decoder, input_stream,
-					    std::move(*tag));
+				client->SubmitTag(input_stream,
+						  std::move(*tag));
 				delete tag;
 			}
 		} while (ret == DECODE_CONT);
@@ -1041,15 +1035,15 @@ MadDecoder::Read()
 }
 
 static void
-mp3_decode(Decoder &decoder, InputStream &input_stream)
+mp3_decode(DecoderClient &client, InputStream &input_stream)
 {
-	MadDecoder data(&decoder, input_stream);
+	MadDecoder data(&client, input_stream);
 
 	Tag *tag = nullptr;
 	if (!data.DecodeFirstFrame(&tag)) {
 		delete tag;
 
-		if (decoder_get_command(decoder) == DecoderCommand::NONE)
+		if (client.GetCommand() == DecoderCommand::NONE)
 			LogError(mad_domain,
 				 "input/Input does not appear to be a mp3 bit stream");
 		return;
@@ -1057,24 +1051,14 @@ mp3_decode(Decoder &decoder, InputStream &input_stream)
 
 	data.AllocateBuffers();
 
-	Error error;
-	AudioFormat audio_format;
-	if (!audio_format_init_checked(audio_format,
-				       data.frame.header.samplerate,
-				       SampleFormat::S24_P32,
-				       MAD_NCHANNELS(&data.frame.header),
-				       error)) {
-		LogError(error);
-		delete tag;
-		return;
-	}
-
-	decoder_initialized(decoder, audio_format,
-			    input_stream.IsSeekable(),
-			    data.total_time);
+	client.Ready(CheckAudioFormat(data.frame.header.samplerate,
+				      SampleFormat::S24_P32,
+				      MAD_NCHANNELS(&data.frame.header)),
+		     input_stream.IsSeekable(),
+		     data.total_time);
 
 	if (tag != nullptr) {
-		decoder_tag(decoder, input_stream, std::move(*tag));
+		client.SubmitTag(input_stream, std::move(*tag));
 		delete tag;
 	}
 

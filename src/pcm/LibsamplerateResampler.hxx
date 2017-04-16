@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -42,17 +42,16 @@ class LibsampleratePcmResampler final : public PcmResampler {
 	PcmBuffer buffer;
 
 public:
-	virtual AudioFormat Open(AudioFormat &af, unsigned new_sample_rate,
-				 Error &error) override;
-	virtual void Close() override;
-	virtual ConstBuffer<void> Resample(ConstBuffer<void> src,
-					   Error &error) override;
+	AudioFormat Open(AudioFormat &af, unsigned new_sample_rate) override;
+	void Close() override;
+	void Reset() override;
+	ConstBuffer<void> Resample(ConstBuffer<void> src) override;
 
 private:
-	ConstBuffer<float> Resample2(ConstBuffer<float> src, Error &error);
+	ConstBuffer<float> Resample2(ConstBuffer<float> src);
 };
 
-bool
-pcm_resample_lsr_global_init(const ConfigBlock &block, Error &error);
+void
+pcm_resample_lsr_global_init(const ConfigBlock &block);
 
 #endif

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -20,14 +20,12 @@
 #ifndef MPD_SMBCLIENT_INIT_HXX
 #define MPD_SMBCLIENT_INIT_HXX
 
-#include "check.h"
-
-class Error;
-
 /**
  * Initialize libsmbclient.
+ *
+ * Throws std::runtime_error on error.
  */
-bool
-SmbclientInit(Error &error);
+void
+SmbclientInit();
 
 #endif

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -26,11 +26,17 @@
 
 #include <stddef.h>
 
+#ifdef _UNICODE
+#include <wchar.h>
+#endif
+
 class OutputStream;
 
 /**
  * An #OutputStream wrapper that buffers its output to reduce the
  * number of OutputStream::Write() calls.
+ *
+ * All wchar_t based strings are converted to UTF-8.
  */
 class BufferedOutputStream {
 	OutputStream &os;
@@ -38,14 +44,27 @@ class BufferedOutputStream {
 	DynamicFifoBuffer<char> buffer;
 
 public:
-	BufferedOutputStream(OutputStream &_os)
+	explicit BufferedOutputStream(OutputStream &_os)
 		:os(_os), buffer(32768) {}
 
 	void Write(const void *data, size_t size);
+
+	void Write(const char &ch) {
+		Write(&ch, sizeof(ch));
+	}
+
 	void Write(const char *p);
 
 	gcc_printf(2,3)
 	void Format(const char *fmt, ...);
+
+#ifdef _UNICODE
+	void Write(const wchar_t &ch) {
+		WriteWideToUTF8(&ch, 1);
+	}
+
+	void Write(const wchar_t *p);
+#endif
 
 	/**
 	 * Write buffer contents to the #OutputStream.
@@ -54,6 +73,10 @@ public:
 
 private:
 	bool AppendToBuffer(const void *data, size_t size) noexcept;
+
+#ifdef _UNICODE
+	void WriteWideToUTF8(const wchar_t *p, size_t length);
+#endif
 };
 
 #endif

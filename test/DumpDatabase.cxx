@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -29,12 +29,13 @@
 #include "config/ConfigGlobal.hxx"
 #include "config/Param.hxx"
 #include "config/Block.hxx"
-#include "tag/TagConfig.hxx"
+#include "tag/Config.hxx"
 #include "fs/Path.hxx"
 #include "event/Loop.hxx"
 #include "Log.hxx"
-#include "util/Error.hxx"
+#include "util/ScopeExit.hxx"
 
+#include <stdexcept>
 #include <iostream>
 using std::cout;
 using std::cerr;
@@ -45,7 +46,7 @@ using std::endl;
 #ifdef ENABLE_UPNP
 #include "input/InputStream.hxx"
 size_t
-InputStream::LockRead(void *, size_t, Error &)
+InputStream::LockRead(void *, size_t)
 {
 	return 0;
 }
@@ -57,35 +58,31 @@ public:
 		cout << "DatabaseModified" << endl;
 	}
 
-	virtual void OnDatabaseSongRemoved(const LightSong &song) override {
-		cout << "SongRemoved " << song.GetURI() << endl;
+	virtual void OnDatabaseSongRemoved(const char *uri) override {
+		cout << "SongRemoved " << uri << endl;
 	}
 };
 
-static bool
-DumpDirectory(const LightDirectory &directory, Error &)
+static void
+DumpDirectory(const LightDirectory &directory)
 {
 	cout << "D " << directory.GetPath() << endl;
-	return true;
 }
 
-static bool
-DumpSong(const LightSong &song, Error &)
+static void
+DumpSong(const LightSong &song)
 {
 	cout << "S ";
 	if (song.directory != nullptr)
 		cout << song.directory << "/";
 	cout << song.uri << endl;
-	return true;
 }
 
-static bool
-DumpPlaylist(const PlaylistInfo &playlist,
-	     const LightDirectory &directory, Error &)
+static void
+DumpPlaylist(const PlaylistInfo &playlist, const LightDirectory &directory)
 {
 	cout << "P " << directory.GetPath()
 	     << "/" << playlist.name.c_str() << endl;
-	return true;
 }
 
 int
@@ -108,8 +105,8 @@ try {
 	/* initialize MPD */
 
 	config_global_init();
+	AtScopeExit() { config_global_finish(); };
 
-	Error error;
 	ReadConfigFile(config_path);
 
 	TagLoadConfig();
@@ -124,36 +121,17 @@ try {
 	if (path != nullptr)
 		block.AddBlockParam("path", path->value.c_str(), path->line);
 
-	Database *db = plugin->create(event_loop, database_listener,
-				      block, error);
+	Database *db = plugin->create(event_loop, database_listener, block);
 
-	if (db == nullptr) {
-		cerr << error.GetMessage() << endl;
-		return EXIT_FAILURE;
-	}
+	AtScopeExit(db) { delete db; };
 
-	if (!db->Open(error)) {
-		delete db;
-		cerr << error.GetMessage() << endl;
-		return EXIT_FAILURE;
-	}
+	db->Open();
+
+	AtScopeExit(db) { db->Close(); };
 
 	const DatabaseSelection selection("", true);
 
-	if (!db->Visit(selection, DumpDirectory, DumpSong, DumpPlaylist,
-		       error)) {
-		db->Close();
-		delete db;
-		cerr << error.GetMessage() << endl;
-		return EXIT_FAILURE;
-	}
-
-	db->Close();
-	delete db;
-
-	/* deinitialize everything */
-
-	config_global_finish();
+	db->Visit(selection, DumpDirectory, DumpSong, DumpPlaylist);
 
 	return EXIT_SUCCESS;
  } catch (const std::exception &e) {

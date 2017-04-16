@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -19,7 +19,6 @@
 
 #include "config.h"
 #include "FatalError.hxx"
-#include "util/Error.hxx"
 #include "util/Domain.hxx"
 #include "LogV.hxx"
 
@@ -60,18 +59,6 @@ FormatFatalError(const char *fmt, ...)
 	va_end(ap);
 
 	Abort();
-}
-
-void
-FatalError(const Error &error)
-{
-	FatalError(error.GetMessage());
-}
-
-void
-FatalError(const char *msg, const Error &error)
-{
-	FormatFatalError("%s: %s", msg, error.GetMessage());
 }
 
 #ifdef WIN32

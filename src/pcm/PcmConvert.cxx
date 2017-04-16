@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -19,21 +19,15 @@
 
 #include "config.h"
 #include "PcmConvert.hxx"
-#include "Domain.hxx"
 #include "ConfiguredResampler.hxx"
-#include "AudioFormat.hxx"
-#include "util/ConstBuffer.hxx"
-#include "util/Error.hxx"
-#include "util/Domain.hxx"
 #include "util/ConstBuffer.hxx"
 
 #include <assert.h>
-#include <math.h>
 
-bool
-pcm_convert_global_init(Error &error)
+void
+pcm_convert_global_init()
 {
-	return pcm_resampler_global_init(error);
+	pcm_resampler_global_init();
 }
 
 PcmConvert::PcmConvert()
@@ -50,9 +44,8 @@ PcmConvert::~PcmConvert()
 	assert(!dest_format.IsValid());
 }
 
-bool
-PcmConvert::Open(const AudioFormat _src_format, const AudioFormat _dest_format,
-		 Error &error)
+void
+PcmConvert::Open(const AudioFormat _src_format, const AudioFormat _dest_format)
 {
 	assert(!src_format.IsValid());
 	assert(!dest_format.IsValid());
@@ -65,39 +58,42 @@ PcmConvert::Open(const AudioFormat _src_format, const AudioFormat _dest_format,
 
 	enable_resampler = format.sample_rate != _dest_format.sample_rate;
 	if (enable_resampler) {
-		if (!resampler.Open(format, _dest_format.sample_rate, error))
-			return false;
+		resampler.Open(format, _dest_format.sample_rate);
 
 		format.format = resampler.GetOutputSampleFormat();
 		format.sample_rate = _dest_format.sample_rate;
 	}
 
 	enable_format = format.format != _dest_format.format;
-	if (enable_format &&
-	    !format_converter.Open(format.format, _dest_format.format,
-				   error)) {
-		if (enable_resampler)
-			resampler.Close();
-		return false;
+	if (enable_format) {
+		try {
+			format_converter.Open(format.format,
+					      _dest_format.format);
+		} catch (...) {
+			if (enable_resampler)
+				resampler.Close();
+			throw;
+		}
 	}
 
 	format.format = _dest_format.format;
 
 	enable_channels = format.channels != _dest_format.channels;
-	if (enable_channels &&
-	    !channels_converter.Open(format.format, format.channels,
-				     _dest_format.channels, error)) {
-		if (enable_format)
-			format_converter.Close();
-		if (enable_resampler)
-			resampler.Close();
-		return false;
+	if (enable_channels) {
+		try {
+			channels_converter.Open(format.format, format.channels,
+						_dest_format.channels);
+		} catch (...) {
+			if (enable_format)
+				format_converter.Close();
+			if (enable_resampler)
+				resampler.Close();
+			throw;
+		}
 	}
 
 	src_format = _src_format;
 	dest_format = _dest_format;
-
-	return true;
 }
 
 void
@@ -120,40 +116,39 @@ PcmConvert::Close()
 #endif
 }
 
+void
+PcmConvert::Reset()
+{
+	if (enable_resampler)
+		resampler.Reset();
+
+#ifdef ENABLE_DSD
+	dsd.Reset();
+#endif
+}
+
 ConstBuffer<void>
-PcmConvert::Convert(ConstBuffer<void> buffer, Error &error)
+PcmConvert::Convert(ConstBuffer<void> buffer)
 {
 #ifdef ENABLE_DSD
 	if (src_format.format == SampleFormat::DSD) {
 		auto s = ConstBuffer<uint8_t>::FromVoid(buffer);
 		auto d = dsd.ToFloat(src_format.channels, s);
-		if (d.IsNull()) {
-			error.Set(pcm_domain,
-				  "DSD to PCM conversion failed");
-			return nullptr;
-		}
+		if (d.IsNull())
+			throw std::runtime_error("DSD to PCM conversion failed");
 
 		buffer = d.ToVoid();
 	}
 #endif
 
-	if (enable_resampler) {
-		buffer = resampler.Resample(buffer, error);
-		if (buffer.IsNull())
-			return nullptr;
-	}
+	if (enable_resampler)
+		buffer = resampler.Resample(buffer);
 
-	if (enable_format) {
-		buffer = format_converter.Convert(buffer, error);
-		if (buffer.IsNull())
-			return nullptr;
-	}
+	if (enable_format)
+		buffer = format_converter.Convert(buffer);
 
-	if (enable_channels) {
-		buffer = channels_converter.Convert(buffer, error);
-		if (buffer.IsNull())
-			return nullptr;
-	}
+	if (enable_channels)
+		buffer = channels_converter.Convert(buffer);
 
 	return buffer;
 }

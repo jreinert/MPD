@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -21,8 +21,13 @@
 #include "Response.hxx"
 #include "Client.hxx"
 #include "util/FormatString.hxx"
+#include "util/AllocatedString.hxx"
 
-#include <string.h>
+TagMask
+Response::GetTagMask() const
+{
+	return GetClient().tag_mask;
+}
 
 bool
 Response::Write(const void *data, size_t length)
@@ -33,16 +38,13 @@ Response::Write(const void *data, size_t length)
 bool
 Response::Write(const char *data)
 {
-	return Write(data, strlen(data));
+	return client.Write(data);
 }
 
 bool
 Response::FormatV(const char *fmt, va_list args)
 {
-	char *p = FormatNewV(fmt, args);
-	bool success = Write(p);
-	delete[] p;
-	return success;
+	return Write(FormatStringV(fmt, args).c_str());
 }
 
 bool

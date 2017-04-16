@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -34,27 +34,27 @@
 
 class NullFilter final : public Filter {
 public:
-	virtual AudioFormat Open(AudioFormat &af,
-				 gcc_unused Error &error) override {
-		return af;
-	}
+	explicit NullFilter(const AudioFormat &af):Filter(af) {}
 
-	virtual void Close() override {}
-
-	virtual ConstBuffer<void> FilterPCM(ConstBuffer<void> src,
-					    gcc_unused Error &error) override {
+	virtual ConstBuffer<void> FilterPCM(ConstBuffer<void> src) override {
 		return src;
 	}
 };
 
-static Filter *
-null_filter_init(gcc_unused const ConfigBlock &block,
-		 gcc_unused Error &error)
+class PreparedNullFilter final : public PreparedFilter {
+public:
+	virtual Filter *Open(AudioFormat &af) override {
+		return new NullFilter(af);
+	}
+};
+
+static PreparedFilter *
+null_filter_init(gcc_unused const ConfigBlock &block)
 {
-	return new NullFilter();
+	return new PreparedNullFilter();
 }
 
-const struct filter_plugin null_filter_plugin = {
+const FilterPlugin null_filter_plugin = {
 	"null",
 	null_filter_init,
 };

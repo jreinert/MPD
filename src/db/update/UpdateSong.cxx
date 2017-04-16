@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -51,7 +51,8 @@ UpdateWalk::UpdateSongFile2(Directory &directory,
 		return;
 	}
 
-	if (!(song != nullptr && info.mtime == song->mtime &&
+	if (!(song != nullptr &&
+	      std::chrono::system_clock::to_time_t(info.mtime) == song->mtime &&
 	      !walk_discard) &&
 	    UpdateContainerFile(directory, name, suffix, info)) {
 		if (song != nullptr)
@@ -79,7 +80,7 @@ UpdateWalk::UpdateSongFile2(Directory &directory,
 		modified = true;
 		FormatDefault(update_domain, "added %s/%s",
 			      directory.GetPath(), name);
-	} else if (info.mtime != song->mtime || walk_discard) {
+	} else if (std::chrono::system_clock::to_time_t(info.mtime) != song->mtime || walk_discard) {
 		FormatDefault(update_domain, "updating %s/%s",
 			      directory.GetPath(), name);
 		if (!song->UpdateFile(storage)) {

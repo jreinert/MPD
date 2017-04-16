@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -87,13 +87,6 @@ public:
 
 	SliceBuffer(const SliceBuffer &other) = delete;
 	SliceBuffer &operator=(const SliceBuffer &other) = delete;
-
-	/**
-	 * @return true if buffer allocation (by the constructor) has failed
-	 */
-	bool IsOOM() {
-		return data == nullptr;
-	}
 
 	unsigned GetCapacity() const {
 		return n_max;

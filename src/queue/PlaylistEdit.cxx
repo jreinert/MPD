@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -25,13 +25,11 @@
 
 #include "config.h"
 #include "Playlist.hxx"
+#include "Listener.hxx"
 #include "PlaylistError.hxx"
 #include "player/Control.hxx"
-#include "util/UriUtil.hxx"
-#include "util/Error.hxx"
 #include "DetachedSong.hxx"
 #include "SongLoader.hxx"
-#include "Idle.hxx"
 
 #include <memory>
 
@@ -48,7 +46,7 @@ playlist::OnModified()
 
 	queue.IncrementVersion();
 
-	idle_add(IDLE_PLAYLIST);
+	listener.OnQueueModified();
 }
 
 void
@@ -125,14 +123,9 @@ playlist::AppendSong(PlayerControl &pc, DetachedSong &&song)
 
 unsigned
 playlist::AppendURI(PlayerControl &pc, const SongLoader &loader,
-		    const char *uri,
-		    Error &error)
+		    const char *uri)
 {
-	std::unique_ptr<DetachedSong> song(loader.LoadSong(uri, error));
-	if (song == nullptr)
-		return 0;
-
-	return AppendSong(pc, std::move(*song));
+	return AppendSong(pc, loader.LoadSong(uri));
 }
 
 void
@@ -239,8 +232,11 @@ playlist::DeleteInternal(PlayerControl &pc,
 
 		if (current >= 0 && !paused)
 			/* play the song after the deleted one */
-			/* TODO: log error? */
-			PlayOrder(pc, current, IgnoreError());
+			try {
+				PlayOrder(pc, current);
+			} catch (...) {
+				/* TODO: log error? */
+			}
 		else {
 			/* stop the player */
 
@@ -311,10 +307,18 @@ playlist::DeleteId(PlayerControl &pc, unsigned id)
 }
 
 void
-playlist::DeleteSong(PlayerControl &pc, const char *uri)
+playlist::StaleSong(PlayerControl &pc, const char *uri)
 {
+	/* don't remove the song if it's currently being played, to
+	   avoid disrupting playback; a deleted file may still be
+	   played if it's still open */
+	// TODO: mark the song as "stale" and postpone deletion
+	int current_position = playing
+		? GetCurrentPosition()
+		: -1;
+
 	for (int i = queue.GetLength() - 1; i >= 0; --i)
-		if (queue.Get(i).IsURI(uri))
+		if (i != current_position && queue.Get(i).IsURI(uri))
 			DeletePosition(pc, i);
 }
 

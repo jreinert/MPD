@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -18,7 +18,7 @@
  */
 
 #include "config.h"
-#include "ScopeIOThread.hxx"
+#include "event/Thread.hxx"
 #include "decoder/DecoderList.hxx"
 #include "decoder/DecoderPlugin.hxx"
 #include "FakeDecoderAPI.hxx"
@@ -26,8 +26,9 @@
 #include "input/InputStream.hxx"
 #include "fs/Path.hxx"
 #include "AudioFormat.hxx"
-#include "util/Error.hxx"
 #include "Log.hxx"
+
+#include <stdexcept>
 
 #include <assert.h>
 #include <unistd.h>
@@ -35,23 +36,20 @@
 #include <stdio.h>
 
 int main(int argc, char **argv)
-{
+try {
 	if (argc != 3) {
 		fprintf(stderr, "Usage: run_decoder DECODER URI >OUT\n");
 		return EXIT_FAILURE;
 	}
 
-	Decoder decoder;
+	FakeDecoder decoder;
 	const char *const decoder_name = argv[1];
 	const char *const uri = argv[2];
 
-	const ScopeIOThread io_thread;
+	EventThread io_thread;
+	io_thread.Start();
 
-	Error error;
-	if (!input_stream_global_init(error)) {
-		LogError(error);
-		return EXIT_FAILURE;
-	}
+	input_stream_global_init(io_thread.GetEventLoop());
 
 	decoder_plugin_init_all();
 
@@ -65,16 +63,7 @@ int main(int argc, char **argv)
 		plugin->FileDecode(decoder, Path::FromFS(uri));
 	} else if (plugin->stream_decode != nullptr) {
 		auto is = InputStream::OpenReady(uri, decoder.mutex,
-						 decoder.cond, error);
-		if (!is) {
-			if (error.IsDefined())
-				LogError(error);
-			else
-				fprintf(stderr, "InputStream::Open() failed\n");
-
-			return EXIT_FAILURE;
-		}
-
+						 decoder.cond);
 		plugin->StreamDecode(decoder, *is);
 	} else {
 		fprintf(stderr, "Decoder plugin is not usable\n");
@@ -89,5 +78,8 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 
-	return 0;
+	return EXIT_SUCCESS;
+} catch (const std::exception &e) {
+	LogError(e);
+	return EXIT_FAILURE;
 }

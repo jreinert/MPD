@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -26,6 +26,7 @@
 #define MPD_OUTPUT_HTTPD_INTERNAL_H
 
 #include "HttpdClient.hxx"
+#include "output/Wrapper.hxx"
 #include "output/Internal.hxx"
 #include "output/Timer.hxx"
 #include "thread/Mutex.hxx"
@@ -34,19 +35,22 @@
 #include "util/Cast.hxx"
 #include "Compiler.h"
 
+#include <boost/intrusive/list.hpp>
+
 #include <queue>
 #include <list>
 
 struct ConfigBlock;
-class Error;
 class EventLoop;
 class ServerSocket;
 class HttpdClient;
-class Page;
-struct Encoder;
+class PreparedEncoder;
+class Encoder;
 struct Tag;
 
 class HttpdOutput final : ServerSocket, DeferredMonitor {
+	friend struct AudioOutputWrapper<HttpdOutput>;
+
 	AudioOutput base;
 
 	/**
@@ -58,6 +62,7 @@ class HttpdOutput final : ServerSocket, DeferredMonitor {
 	/**
 	 * The configured encoder plugin.
 	 */
+	PreparedEncoder *prepared_encoder = nullptr;
 	Encoder *encoder;
 
 	/**
@@ -96,12 +101,12 @@ private:
 	/**
 	 * The header page, which is sent to every client on connect.
 	 */
-	Page *header;
+	PagePtr header;
 
 	/**
 	 * The metadata, which is sent to every client.
 	 */
-	Page *metadata;
+	PagePtr metadata;
 
 	/**
 	 * The page queue, i.e. pages from the encoder to be
@@ -109,7 +114,7 @@ private:
 	 * pass pages from the OutputThread to the IOThread.  It is
 	 * protected by #mutex, and removing signals #cond.
 	 */
-	std::queue<Page *, std::list<Page *>> pages;
+	std::queue<PagePtr, std::list<PagePtr>> pages;
 
  public:
 	/**
@@ -146,8 +151,11 @@ private:
 	unsigned clients_max;
 
 public:
-	HttpdOutput(EventLoop &_loop);
+	HttpdOutput(EventLoop &_loop, const ConfigBlock &block);
 	~HttpdOutput();
+
+	static HttpdOutput *Create(EventLoop &event_loop,
+				   const ConfigBlock &block);
 
 #if CLANG_OR_GCC_VERSION(4,7)
 	constexpr
@@ -158,33 +166,28 @@ public:
 
 	using DeferredMonitor::GetEventLoop;
 
-	bool Init(const ConfigBlock &block, Error &error);
-
-	bool Configure(const ConfigBlock &block, Error &error);
-
-	AudioOutput *InitAndConfigure(const ConfigBlock &block,
-				       Error &error) {
-		if (!Init(block, error))
-			return nullptr;
-
-		if (!Configure(block, error))
-			return nullptr;
-
-		return &base;
-	}
-
-	bool Bind(Error &error);
+	void Bind();
 	void Unbind();
 
+	void Enable() {
+		Bind();
+	}
+
+	void Disable() {
+		Unbind();
+	}
+
 	/**
 	 * Caller must lock the mutex.
+	 *
+	 * Throws #std::runtime_error on error.
 	 */
-	bool OpenEncoder(AudioFormat &audio_format, Error &error);
+	void OpenEncoder(AudioFormat &audio_format);
 
 	/**
 	 * Caller must lock the mutex.
 	 */
-	bool Open(AudioFormat &audio_format, Error &error);
+	void Open(AudioFormat &audio_format);
 
 	/**
 	 * Caller must lock the mutex.
@@ -206,7 +209,7 @@ public:
 	 */
 	gcc_pure
 	bool LockHasClients() const {
-		const ScopeLock protect(mutex);
+		const std::lock_guard<Mutex> protect(mutex);
 		return HasClients();
 	}
 
@@ -224,33 +227,39 @@ public:
 	void SendHeader(HttpdClient &client) const;
 
 	gcc_pure
-	unsigned Delay() const;
+	std::chrono::steady_clock::duration Delay() const;
 
 	/**
 	 * Reads data from the encoder (as much as available) and
 	 * returns it as a new #page object.
 	 */
-	Page *ReadPage();
+	PagePtr ReadPage();
 
 	/**
 	 * Broadcasts a page struct to all clients.
 	 *
 	 * Mutext must not be locked.
 	 */
-	void BroadcastPage(Page *page);
+	void BroadcastPage(PagePtr page);
 
 	/**
 	 * Broadcasts data from the encoder to all clients.
 	 */
 	void BroadcastFromEncoder();
 
-	bool EncodeAndPlay(const void *chunk, size_t size, Error &error);
+	/**
+	 * Throws #std::runtime_error on error.
+	 */
+	void EncodeAndPlay(const void *chunk, size_t size);
 
 	void SendTag(const Tag &tag);
 
-	size_t Play(const void *chunk, size_t size, Error &error);
+	size_t Play(const void *chunk, size_t size);
 
 	void CancelAllClients();
+
+	void Cancel();
+	bool Pause();
 
 private:
 	virtual void RunDeferred() override;

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -22,7 +22,6 @@
 
 class Mutex;
 class Cond;
-class Error;
 struct ArchivePlugin;
 class ArchiveVisitor;
 class InputStream;
@@ -51,11 +50,12 @@ public:
 	/**
 	 * Opens an InputStream of a file within the archive.
 	 *
+	 * Throws std::runtime_error on error.
+	 *
 	 * @param path the path within the archive
 	 */
 	virtual InputStream *OpenStream(const char *path,
-					Mutex &mutex, Cond &cond,
-					Error &error) = 0;
+					Mutex &mutex, Cond &cond) = 0;
 };
 
 #endif

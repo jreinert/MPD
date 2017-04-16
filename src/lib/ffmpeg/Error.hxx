@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -20,12 +20,12 @@
 #ifndef MPD_FFMPEG_ERROR_HXX
 #define MPD_FFMPEG_ERROR_HXX
 
-class Error;
+#include <stdexcept>
 
-void
-SetFfmpegError(Error &error, int errnum);
+std::runtime_error
+MakeFfmpegError(int errnum);
 
-void
-SetFfmpegError(Error &error, int errnum, const char *prefix);
+std::runtime_error
+MakeFfmpegError(int errnum, const char *prefix);
 
 #endif

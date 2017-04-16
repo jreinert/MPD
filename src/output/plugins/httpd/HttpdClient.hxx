@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -20,10 +20,12 @@
 #ifndef MPD_OUTPUT_HTTPD_CLIENT_HXX
 #define MPD_OUTPUT_HTTPD_CLIENT_HXX
 
+#include "Page.hxx"
 #include "event/BufferedSocket.hxx"
 #include "Compiler.h"
 
-#include <boost/intrusive/list.hpp>
+#include <boost/intrusive/link_mode.hpp>
+#include <boost/intrusive/list_hook.hpp>
 
 #include <queue>
 #include <list>
@@ -31,7 +33,6 @@
 #include <stddef.h>
 
 class HttpdOutput;
-class Page;
 
 class HttpdClient final
 	: BufferedSocket,
@@ -58,7 +59,7 @@ class HttpdClient final
 	/**
 	 * A queue of #Page objects to be sent to the client.
 	 */
-	std::queue<Page *, std::list<Page *>> pages;
+	std::queue<PagePtr, std::list<PagePtr>> pages;
 
 	/**
 	 * The sum of all page sizes in #pages.
@@ -68,7 +69,7 @@ class HttpdClient final
 	/**
 	 * The #page which is currently being sent to the client.
 	 */
-	Page *current_page;
+	PagePtr current_page;
 
 	/**
 	 * The amount of bytes which were already sent from
@@ -112,7 +113,7 @@ class HttpdClient final
 	/**
 	 * The metadata as #Page which is currently being sent to the client.
 	 */
-	Page *metadata;
+	PagePtr metadata;
 
 	/*
 	 * The amount of bytes which were already sent from the metadata.
@@ -177,12 +178,12 @@ public:
 	/**
 	 * Appends a page to the client's queue.
 	 */
-	void PushPage(Page *page);
+	void PushPage(PagePtr page);
 
 	/**
 	 * Sends the passed metadata.
 	 */
-	void PushMetaData(Page *page);
+	void PushMetaData(PagePtr page);
 
 private:
 	void ClearQueue();
@@ -190,7 +191,7 @@ private:
 protected:
 	virtual bool OnSocketReady(unsigned flags) override;
 	virtual InputResult OnSocketInput(void *data, size_t length) override;
-	virtual void OnSocketError(Error &&error) override;
+	void OnSocketError(std::exception_ptr ep) override;
 	virtual void OnSocketClosed() override;
 };
 

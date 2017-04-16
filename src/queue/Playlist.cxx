@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2016 The Music Player Daemon Project
+ * Copyright 2003-2017 The Music Player Daemon Project
  * http://www.musicpd.org
  *
  * This program is free software; you can redistribute it and/or modify
@@ -19,10 +19,10 @@
 
 #include "config.h"
 #include "Playlist.hxx"
+#include "Listener.hxx"
 #include "PlaylistError.hxx"
 #include "player/Control.hxx"
 #include "DetachedSong.hxx"
-#include "Idle.hxx"
 #include "Log.hxx"
 
 #include <assert.h>
@@ -40,8 +40,7 @@ playlist::TagModified(DetachedSong &&song)
 		current_song.MoveTagItemsFrom(std::move(song));
 
 	queue.ModifyAtOrder(current);
-	queue.IncrementVersion();
-	idle_add(IDLE_PLAYLIST);
+	OnModified();
 }
 
 inline void
@@ -87,7 +86,7 @@ playlist::QueuedSongStarted(PlayerControl &pc)
 	if (queue.consume)
 		DeleteOrder(pc, old_current);
 
-	idle_add(IDLE_PLAYER);
+	listener.OnQueueSongStarted();
 
 	SongStarted();
 }
@@ -152,24 +151,21 @@ playlist::UpdateQueuedSong(PlayerControl &pc, const DetachedSong *prev)
 	}
 }
 
-bool
-playlist::PlayOrder(PlayerControl &pc, int order, Error &error)
+void
+playlist::PlayOrder(PlayerControl &pc, unsigned order)
 {
 	playing = true;
 	queued = -1;
 
 	const DetachedSong &song = queue.GetOrder(order);
 
-	FormatDebug(playlist_domain, "play %i:\"%s\"", order, song.GetURI());
+	FormatDebug(playlist_domain, "play %u:\"%s\"", order, song.GetURI());
 
 	current = order;
 
-	if (!pc.Play(new DetachedSong(song), error))
-		return false;
+	pc.Play(new DetachedSong(song));
 
 	SongStarted();
-
-	return true;
 }
 
 void
@@ -228,8 +224,11 @@ playlist::ResumePlayback(PlayerControl &pc)
 		Stop(pc);
 	else
 		/* continue playback at the next song */
-		/* TODO: log error? */
-		PlayNext(pc, IgnoreError());
+		try {
+			PlayNext(pc);
+		} catch (...) {
+			/* TODO: log error? */
+		}
 }
 
 void
@@ -246,7 +245,7 @@ playlist::SetRepeat(PlayerControl &pc, bool status)
 	   might change when repeat mode is toggled */
 	UpdateQueuedSong(pc, GetQueuedSong());
 
-	idle_add(IDLE_OPTIONS);
+	listener.OnQueueOptionsChanged();
 }
 
 static void
@@ -273,7 +272,7 @@ playlist::SetSingle(PlayerControl &pc, bool status)
 	   might change when single mode is toggled */
 	UpdateQueuedSong(pc, GetQueuedSong());
 
-	idle_add(IDLE_OPTIONS);
+	listener.OnQueueOptionsChanged();
 }
 
 void
@@ -283,7 +282,7 @@ playlist::SetConsume(bool status)
 		return;
 
 	queue.consume = status;
-	idle_add(IDLE_OPTIONS);
+	listener.OnQueueOptionsChanged();
 }
 
 void
@@ -311,7 +310,7 @@ playlist::SetRandom(PlayerControl &pc, bool status)
 			   playlist is played after that */
 			unsigned current_order =
 				queue.PositionToOrder(current_position);
-			queue.SwapOrders(0, current_order);
+			queue.MoveOrder(current_order, 0);
 			current = 0;
 		} else
 			current = -1;
@@ -320,7 +319,7 @@ playlist::SetRandom(PlayerControl &pc, bool status)
 
 	UpdateQueuedSong(pc, queued_song);
 
-	idle_add(IDLE_OPTIONS);
+	listener.OnQueueOptionsChanged();
 }
 
 int
